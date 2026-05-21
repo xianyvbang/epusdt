@@ -484,6 +484,11 @@ func TestGetSupportedAssets_WalletAddressToggle(t *testing.T) {
 
 func TestGetPublicConfig(t *testing.T) {
 	e := setupTestEnv(t)
+	oldVersion := config.BuildVersion
+	config.BuildVersion = "v1.0.1"
+	t.Cleanup(func() {
+		config.BuildVersion = oldVersion
+	})
 	if err := data.SetSetting(mdb.SettingGroupBrand, mdb.SettingKeyBrandCheckoutName, "asd", mdb.SettingTypeString); err != nil {
 		t.Fatalf("seed brand.checkout_name: %v", err)
 	}
@@ -526,6 +531,9 @@ func TestGetPublicConfig(t *testing.T) {
 	}
 	if len(supports) < 2 {
 		t.Fatalf("expected >= 2 network supports, got %d", len(supports))
+	}
+	if respData["version"] != "v1.0.1" {
+		t.Fatalf("version = %v, want v1.0.1", respData["version"])
 	}
 	site, ok := respData["site"].(map[string]interface{})
 	if !ok {

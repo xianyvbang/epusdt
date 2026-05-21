@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/middleware"
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
@@ -112,7 +113,8 @@ func (c *BaseCommController) GetPublicConfig(ctx echo.Context) error {
 			DefaultCurrency: data.GetSettingString(mdb.SettingKeyEpayDefaultCurrency, "cny"),
 			DefaultNetwork:  data.GetSettingString(mdb.SettingKeyEpayDefaultNetwork, "tron"),
 		},
-		OkPay: okpay,
+		OkPay:   okpay,
+		Version: config.GetAppVersion(),
 	})
 }
 

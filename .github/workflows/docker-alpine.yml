@@ -1,11 +1,7 @@
 name: docker-alpine-epusdt
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - "main"
-      - "master"
     tags:
       - "v*"
 
@@ -34,7 +30,6 @@ jobs:
           tags: |
             type=raw,value=alpine
             type=raw,value=latest
-            type=ref,event=branch,suffix=-alpine
             type=ref,event=tag
             type=sha,prefix=sha-,suffix=-alpine
 
@@ -53,5 +48,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             API_RATE_URL=${{ vars.API_RATE_URL }}
+            BUILD_VERSION=${{ github.ref_name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

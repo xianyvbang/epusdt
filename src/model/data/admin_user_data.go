@@ -40,6 +40,9 @@ type InitialAdminPasswordHashInfo struct {
 // can print it to the console. Idempotent — subsequent calls return
 // ("", false, nil).
 func EnsureDefaultAdmin() (password string, created bool, err error) {
+	if err := purgeDeletedInitialAdminPasswordPlain(); err != nil {
+		return "", false, err
+	}
 	var count int64
 	if err := dao.Mdb.Model(&mdb.AdminUser{}).Count(&count).Error; err != nil {
 		return "", false, err
@@ -66,6 +69,12 @@ func EnsureDefaultAdmin() (password string, created bool, err error) {
 		return password, true, err
 	}
 	return password, true, nil
+}
+
+func purgeDeletedInitialAdminPasswordPlain() error {
+	return dao.Mdb.Unscoped().
+		Where("`key` = ? AND deleted_at IS NOT NULL", mdb.SettingKeyInitAdminPasswordPlain).
+		Delete(&mdb.Setting{}).Error
 }
 
 func randomAdminPassword() string {
@@ -121,9 +130,11 @@ func initAdminPasswordState(plain string) error {
 }
 
 func upsertSettingRow(tx *gorm.DB, row mdb.Setting) error {
+	updates := clause.AssignmentColumns([]string{"group", "value", "type", "description", "updated_at"})
+	updates = append(updates, clause.Assignment{Column: clause.Column{Name: "deleted_at"}, Value: nil})
 	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"group", "value", "type", "description", "updated_at"}),
+		DoUpdates: updates,
 	}).Create(&row).Error
 }
 
@@ -154,7 +165,7 @@ func ConsumeInitialAdminPassword() (string, error) {
 			return ErrInitAdminPasswordUnavailable
 		}
 		password = row.Value
-		res := tx.Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).Delete(&mdb.Setting{})
+		res := tx.Unscoped().Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).Delete(&mdb.Setting{})
 		if res.Error != nil {
 			return res.Error
 		}

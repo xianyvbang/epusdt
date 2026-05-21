@@ -37,4 +37,5 @@ type PublicConfigResponse struct {
 	Site            SitePublicConfig      `json:"site"`
 	Epay            EpayPublicConfig      `json:"epay"`
 	OkPay           OkPayPublicConfig     `json:"okpay"`
+	Version         string                `json:"version" example:"v1.0.1"`
 }

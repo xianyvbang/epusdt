@@ -144,9 +144,11 @@ func SetSetting(group, key, value, valueType string) error {
 		valueType = mdb.SettingTypeString
 	}
 	row := mdb.Setting{Group: group, Key: key, Value: value, Type: valueType}
+	updates := clause.AssignmentColumns([]string{"group", "value", "type", "updated_at"})
+	updates = append(updates, clause.Assignment{Column: clause.Column{Name: "deleted_at"}, Value: nil})
 	err := dao.Mdb.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"group", "value", "type", "updated_at"}),
+		DoUpdates: updates,
 	}).Create(&row).Error
 	if err != nil {
 		return err

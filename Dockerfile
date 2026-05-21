@@ -8,8 +8,9 @@ WORKDIR /app
 COPY . /app
 
 WORKDIR /app/src
+ARG BUILD_VERSION=0.0.0-dev
 RUN go mod download
-RUN go build -o /app/epusdt .
+RUN go build -trimpath -ldflags="-s -w -X github.com/GMWalletApp/epusdt/config.BuildVersion=${BUILD_VERSION}" -o /app/epusdt .
 
 FROM alpine:latest AS runner
 ENV TZ=Asia/Shanghai

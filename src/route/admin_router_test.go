@@ -322,6 +322,16 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 	if fetchData["password"] != initPassword {
 		t.Fatalf("expected initial password %s, got %v", initPassword, fetchData["password"])
 	}
+	var plaintextRows int64
+	if err := dao.Mdb.Unscoped().
+		Model(&mdb.Setting{}).
+		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
+		Count(&plaintextRows).Error; err != nil {
+		t.Fatalf("count init password plaintext rows: %v", err)
+	}
+	if plaintextRows != 0 {
+		t.Fatalf("expected init password plaintext to be hard-deleted, got %d rows", plaintextRows)
+	}
 
 	recFetch2 := doGet(e, "/admin/api/v1/auth/init-password")
 	if recFetch2.Code != http.StatusBadRequest {
@@ -970,6 +980,58 @@ func TestAdminSettings_DeleteNonExistent(t *testing.T) {
 	// Should not be a server error.
 	if rec.Code >= 500 {
 		t.Fatalf("unexpected server error: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminSettings_DeleteThenReupsertRestoresSetting(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "https://rate.old.example", "type": "string"},
+		},
+	}, token)
+	assertOK(t, rec)
+
+	rec = doDeleteAdmin(e, "/admin/api/v1/settings/"+mdb.SettingKeyRateApiUrl, token)
+	assertOK(t, rec)
+	if got := data.GetSettingString(mdb.SettingKeyRateApiUrl, "fallback"); got != "fallback" {
+		t.Fatalf("deleted setting still in cache/read path: got %q", got)
+	}
+
+	rec = doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "https://rate.new.example", "type": "string"},
+		},
+	}, token)
+	assertOK(t, rec)
+
+	rec = doGetAdmin(e, "/admin/api/v1/settings?group=rate", token)
+	resp := assertOK(t, rec)
+	rows, ok := resp["data"].([]interface{})
+	if !ok {
+		t.Fatalf("expected settings array, got %T", resp["data"])
+	}
+	found := false
+	for _, row := range rows {
+		item, _ := row.(map[string]interface{})
+		if item["key"] == mdb.SettingKeyRateApiUrl {
+			found = true
+			if item["value"] != "https://rate.new.example" {
+				t.Fatalf("rate.api_url value = %v, want new value", item["value"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected settings list to include restored %s", mdb.SettingKeyRateApiUrl)
+	}
+
+	var restored mdb.Setting
+	if err := dao.Mdb.Unscoped().Where("`key` = ?", mdb.SettingKeyRateApiUrl).Take(&restored).Error; err != nil {
+		t.Fatalf("load restored setting unscoped: %v", err)
+	}
+	if restored.DeletedAt.Valid {
+		t.Fatalf("restored setting still has deleted_at=%v", restored.DeletedAt)
 	}
 }
 
