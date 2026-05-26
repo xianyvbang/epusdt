@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +35,31 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestGenerateCodeFormat(t *testing.T) {
+	tradeID := GenerateCode()
+
+	if len(tradeID) != 24 {
+		t.Fatalf("trade id length = %d, want 24", len(tradeID))
+	}
+	if strings.Contains(tradeID, "=") {
+		t.Fatalf("trade id = %q, contains padding '='", tradeID)
+	}
+	for _, ch := range tradeID {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			continue
+		}
+		t.Fatalf("trade id = %q, contains non URL-safe character %q", tradeID, ch)
+	}
+
+	decoded, err := base64.RawURLEncoding.DecodeString(tradeID)
+	if err != nil {
+		t.Fatalf("decode trade id %q: %v", tradeID, err)
+	}
+	if len(decoded) != 18 {
+		t.Fatalf("decoded trade id length = %d, want 18", len(decoded))
+	}
 }
 
 func installMockHTTPClient(t *testing.T, handler roundTripFunc) {

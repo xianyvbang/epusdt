@@ -1,12 +1,12 @@
 package service
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/dao"
@@ -322,9 +322,11 @@ func ReserveAvailableWalletAndAmount(tradeID string, network string, token strin
 
 // GenerateCode creates a unique trade id.
 func GenerateCode() string {
-	date := time.Now().Format("20060102")
-	r := rand.Intn(1000)
-	return fmt.Sprintf("%s%d%03d", date, time.Now().UnixNano()/1e6, r)
+	buf := make([]byte, 18)
+	if _, err := cryptorand.Read(buf); err != nil {
+		panic(fmt.Sprintf("generate trade id: crypto/rand failed: %v", err))
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 // GetOrderInfoByTradeId returns a validated order.
