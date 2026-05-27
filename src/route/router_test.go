@@ -18,6 +18,7 @@ import (
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/service"
+	"github.com/GMWalletApp/epusdt/util/constant"
 	"github.com/GMWalletApp/epusdt/util/http_client"
 	"github.com/GMWalletApp/epusdt/util/log"
 	"github.com/GMWalletApp/epusdt/util/sign"
@@ -285,6 +286,39 @@ func TestCreateOrderGmpayRejectsPrivateNotifyURL(t *testing.T) {
 	rec := doPost(e, "/payments/gmpay/v1/order/create-transaction", body)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal private notify response: %v", err)
+	}
+	if got := int(resp["status_code"].(float64)); got != 10041 {
+		t.Fatalf("status_code = %d, want 10041; response=%v", got, resp)
+	}
+	if got, _ := resp["message"].(string); got != constant.Errno[10041] {
+		t.Fatalf("message = %q, want %q", got, constant.Errno[10041])
+	}
+}
+
+func TestPublicJSONBindErrorUsesParamsErrno(t *testing.T) {
+	e := setupTestEnv(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/pay/submit-tx-hash/bad-json-order", strings.NewReader("{"))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal bind error response: %v", err)
+	}
+	if got := int(resp["status_code"].(float64)); got != 10009 {
+		t.Fatalf("status_code = %d, want 10009; response=%v", got, resp)
+	}
+	if got, _ := resp["message"].(string); got != constant.Errno[10009] {
+		t.Fatalf("message = %q, want %q", got, constant.Errno[10009])
 	}
 }
 
@@ -1101,9 +1135,13 @@ func TestSubmitTxHash_SuccessUpdatesCheckStatus(t *testing.T) {
 	})
 	defer restore()
 
-	rec := doPost(e, "/pay/submit-tx-hash/"+tradeID, map[string]interface{}{
+	jsonBytes, _ := json.Marshal(map[string]interface{}{
 		"block_transaction_id": " user-submitted-hash ",
 	})
+	req := httptest.NewRequest(http.MethodPost, "/pay/submit-tx-hash/"+tradeID, strings.NewReader(string(jsonBytes)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
 	t.Logf("SubmitTxHash(success): status=%d body=%s", rec.Code, rec.Body.String())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1127,9 +1165,9 @@ func TestSubmitTxHash_SuccessUpdatesCheckStatus(t *testing.T) {
 		t.Fatalf("submit response status = %d, want %d", got, mdb.StatusPaySuccess)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/pay/check-status/"+tradeID, nil)
+	statusReq := httptest.NewRequest(http.MethodGet, "/pay/check-status/"+tradeID, nil)
 	statusRec := httptest.NewRecorder()
-	e.ServeHTTP(statusRec, req)
+	e.ServeHTTP(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK {
 		t.Fatalf("check-status expected 200, got %d: %s", statusRec.Code, statusRec.Body.String())
 	}
@@ -1143,6 +1181,86 @@ func TestSubmitTxHash_SuccessUpdatesCheckStatus(t *testing.T) {
 	}
 	if got := int(statusData["status"].(float64)); got != mdb.StatusPaySuccess {
 		t.Fatalf("check-status status = %d, want %d", got, mdb.StatusPaySuccess)
+	}
+}
+
+func TestSubmitTxHash_VerificationFailureAllowsRetrySameHash(t *testing.T) {
+	e := setupTestEnv(t)
+	tradeID := createCheckoutCounterRespTestOrder(t, e, "submit-tx-hash-retry-001")
+
+	calls := 0
+	restore := service.SetManualOrderPaymentValidatorForTest(func(order *mdb.Orders, blockID string) (string, error) {
+		calls++
+		if order.TradeId != tradeID {
+			t.Fatalf("validator trade_id = %s, want %s", order.TradeId, tradeID)
+		}
+		if blockID != "retry-hash" {
+			t.Fatalf("validator block id = %s, want retry-hash", blockID)
+		}
+		if calls == 1 {
+			return "", fmt.Errorf("rpc verification failed")
+		}
+		return "canonical-retry-hash", nil
+	})
+	defer restore()
+
+	rec := doPost(e, "/pay/submit-tx-hash/"+tradeID, map[string]interface{}{
+		"block_transaction_id": "retry-hash",
+	})
+	t.Logf("SubmitTxHash(verification failure): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var failResp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &failResp); err != nil {
+		t.Fatalf("unmarshal failure response: %v", err)
+	}
+	if got := int(failResp["status_code"].(float64)); got != 10038 {
+		t.Fatalf("failure status_code = %d, want 10038", got)
+	}
+	if got, _ := failResp["message"].(string); got != constant.Errno[10038] {
+		t.Fatalf("failure message = %q, want %q", got, constant.Errno[10038])
+	}
+
+	reloaded, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload order after failure: %v", err)
+	}
+	if reloaded.Status != mdb.StatusWaitPay || reloaded.BlockTransactionId != "" {
+		t.Fatalf("order changed after failed submit: status=%d block=%q", reloaded.Status, reloaded.BlockTransactionId)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/pay/check-status/"+tradeID, nil)
+	statusRec := httptest.NewRecorder()
+	e.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("check-status expected 200, got %d: %s", statusRec.Code, statusRec.Body.String())
+	}
+	var statusResp map[string]interface{}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusResp); err != nil {
+		t.Fatalf("unmarshal check-status response: %v", err)
+	}
+	statusData := statusResp["data"].(map[string]interface{})
+	if got := int(statusData["status"].(float64)); got != mdb.StatusWaitPay {
+		t.Fatalf("check-status status after failed submit = %d, want %d", got, mdb.StatusWaitPay)
+	}
+
+	retryRec := doPost(e, "/pay/submit-tx-hash/"+tradeID, map[string]interface{}{
+		"block_transaction_id": "retry-hash",
+	})
+	t.Logf("SubmitTxHash(retry same hash): status=%d body=%s", retryRec.Code, retryRec.Body.String())
+	if retryRec.Code != http.StatusOK {
+		t.Fatalf("expected retry success, got %d: %s", retryRec.Code, retryRec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("validator calls = %d, want 2", calls)
+	}
+	reloaded, err = data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload order after retry: %v", err)
+	}
+	if reloaded.Status != mdb.StatusPaySuccess || reloaded.BlockTransactionId != "canonical-retry-hash" {
+		t.Fatalf("order after retry: status=%d block=%q", reloaded.Status, reloaded.BlockTransactionId)
 	}
 }
 
@@ -1189,6 +1307,45 @@ func TestSubmitTxHash_RejectsOkPayOrder(t *testing.T) {
 	}
 	if reloaded.Status != mdb.StatusWaitPay || reloaded.BlockTransactionId != "" {
 		t.Fatalf("order changed after rejected submit: status=%d block=%q", reloaded.Status, reloaded.BlockTransactionId)
+	}
+}
+
+func TestSubmitTxHash_RejectsExistingHashBeforeRpc(t *testing.T) {
+	e := setupTestEnv(t)
+	existing := &mdb.Orders{
+		TradeId:            "trade-submit-tx-hash-existing",
+		OrderId:            "order-submit-tx-hash-existing",
+		BlockTransactionId: "existing-hash",
+		Amount:             10,
+		Currency:           "CNY",
+		ActualAmount:       1.23,
+		ReceiveAddress:     "TTestTronAddress001",
+		Token:              "USDT",
+		Network:            mdb.NetworkTron,
+		Status:             mdb.StatusPaySuccess,
+		PayProvider:        mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(existing).Error; err != nil {
+		t.Fatalf("create existing paid order: %v", err)
+	}
+	tradeID := createCheckoutCounterRespTestOrder(t, e, "submit-tx-hash-existing-001")
+
+	called := false
+	restore := service.SetManualOrderPaymentValidatorForTest(func(*mdb.Orders, string) (string, error) {
+		called = true
+		return "existing-hash", nil
+	})
+	defer restore()
+
+	rec := doPost(e, "/pay/submit-tx-hash/"+tradeID, map[string]interface{}{
+		"block_transaction_id": "existing-hash",
+	})
+	t.Logf("SubmitTxHash(existing hash): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected failure, got 200: %s", rec.Body.String())
+	}
+	if called {
+		t.Fatal("verifier should not run when hash already exists")
 	}
 }
 

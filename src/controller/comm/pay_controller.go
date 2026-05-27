@@ -60,7 +60,7 @@ func (c *BaseCommController) CheckStatus(ctx echo.Context) (err error) {
 // @Param        trade_id path string true "Trade ID"
 // @Param        request body request.ManualPaymentRequest true "Transaction hash payload"
 // @Success      200 {object} response.ApiResponse{data=response.ManualPaymentResponse}
-// @Failure      400 {object} response.ApiResponse "Order not found, order not waiting payment, unsupported provider order, invalid hash, or other request error"
+// @Failure      400 {object} response.ApiResponse "Stable errno in status_code: 10008 order not found, 10009 invalid params, 10013 not waiting payment, 10038 verification failed, 10039 unsupported provider, 10007 hash already processed"
 // @Router       /pay/submit-tx-hash/{trade_id} [post]
 func (c *BaseCommController) SubmitTxHash(ctx echo.Context) (err error) {
 	tradeId := ctx.Param("trade_id")
@@ -73,7 +73,7 @@ func (c *BaseCommController) SubmitTxHash(ctx echo.Context) (err error) {
 		return c.FailJson(ctx, err)
 	}
 
-	resp, err := service.SubmitManualPayment(tradeId, req.BlockTransactionId)
+	resp, err := service.SubmitCashierManualPayment(tradeId, req.BlockTransactionId)
 	if err != nil {
 		return c.FailJson(ctx, err)
 	}

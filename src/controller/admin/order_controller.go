@@ -2,7 +2,6 @@ package admin
 
 import (
 	"encoding/csv"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/request"
 	"github.com/GMWalletApp/epusdt/model/service"
+	"github.com/GMWalletApp/epusdt/util/constant"
 	"github.com/GMWalletApp/epusdt/util/log"
 	"github.com/labstack/echo/v4"
 )
@@ -88,7 +88,7 @@ func (c *BaseAdminController) GetOrder(ctx echo.Context) error {
 		return c.FailJson(ctx, err)
 	}
 	if order.ID == 0 {
-		return c.FailJson(ctx, errors.New("order not found"))
+		return c.FailJson(ctx, constant.OrderNotExists)
 	}
 	return c.SucJson(ctx, order)
 }
@@ -110,17 +110,17 @@ func (c *BaseAdminController) CloseOrder(ctx echo.Context) error {
 		return c.FailJson(ctx, err)
 	}
 	if order.ID == 0 {
-		return c.FailJson(ctx, errors.New("order not found"))
+		return c.FailJson(ctx, constant.OrderNotExists)
 	}
 	if order.Status != mdb.StatusWaitPay {
-		return c.FailJson(ctx, errors.New("order is not waiting payment"))
+		return c.FailJson(ctx, constant.OrderNotWaitPay)
 	}
 	ok, err := data.CloseOrderManually(tradeID)
 	if err != nil {
 		return c.FailJson(ctx, err)
 	}
 	if !ok {
-		return c.FailJson(ctx, errors.New("close failed (concurrent state change)"))
+		return c.FailJson(ctx, constant.OrderStatusConflict)
 	}
 	// Release the transaction lock so the amount slot becomes reusable.
 	_ = data.UnLockTransaction(order.Network, order.ReceiveAddress, order.Token, order.ActualAmount)
@@ -147,7 +147,7 @@ func (c *BaseAdminController) MarkOrderPaid(ctx echo.Context) error {
 	req := new(request.ManualPaymentRequest)
 	if err := ctx.Bind(req); err != nil {
 		log.Sugar.Warnf("[admin-order] mark-paid bind failed admin_user_id=%d trade_id=%s err=%v", adminUserID, tradeID, err)
-		return c.FailJson(ctx, err)
+		return c.FailJson(ctx, constant.ParamsMarshalErr)
 	}
 	req.BlockTransactionId = strings.TrimSpace(req.BlockTransactionId)
 	if err := c.ValidateStruct(ctx, req); err != nil {
@@ -184,17 +184,17 @@ func (c *BaseAdminController) ResendCallback(ctx echo.Context) error {
 		return c.FailJson(ctx, err)
 	}
 	if order.ID == 0 {
-		err = errors.New("order not found")
+		err = constant.OrderNotExists
 		log.Sugar.Warnf("[admin-order] resend-callback rejected admin_user_id=%d trade_id=%s err=%v", adminUserID, tradeID, err)
 		return c.FailJson(ctx, err)
 	}
 	if order.Status != mdb.StatusPaySuccess {
-		err = errors.New("order is not paid (callback not applicable)")
+		err = constant.OrderCallbackNotApplicable
 		log.Sugar.Warnf("[admin-order] resend-callback rejected admin_user_id=%d trade_id=%s status=%d err=%v", adminUserID, tradeID, order.Status, err)
 		return c.FailJson(ctx, err)
 	}
 	if strings.TrimSpace(order.NotifyUrl) == "" {
-		err = errors.New("order has empty notify_url")
+		err = constant.OrderNotifyURLEmptyErr
 		log.Sugar.Warnf("[admin-order] resend-callback rejected admin_user_id=%d trade_id=%s err=%v", adminUserID, tradeID, err)
 		return c.FailJson(ctx, err)
 	}
@@ -204,7 +204,7 @@ func (c *BaseAdminController) ResendCallback(ctx echo.Context) error {
 		return c.FailJson(ctx, err)
 	}
 	if !ok {
-		err = errors.New("resend callback failed (concurrent state change)")
+		err = constant.OrderResendCallbackErr
 		log.Sugar.Warnf("[admin-order] resend-callback rejected admin_user_id=%d trade_id=%s err=%v", adminUserID, tradeID, err)
 		return c.FailJson(ctx, err)
 	}
@@ -389,7 +389,7 @@ func (c *BaseAdminController) GetOrderWithSub(ctx echo.Context) error {
 		return c.FailJson(ctx, err)
 	}
 	if order.ID == 0 {
-		return c.FailJson(ctx, errors.New("order not found"))
+		return c.FailJson(ctx, constant.OrderNotExists)
 	}
 	subOrders, err := data.GetAllSubOrders(tradeID)
 	if err != nil {

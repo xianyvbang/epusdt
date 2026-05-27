@@ -15,6 +15,7 @@ import (
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/service"
+	"github.com/GMWalletApp/epusdt/util/constant"
 	"github.com/labstack/echo/v4"
 )
 
@@ -339,8 +340,15 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 	if recFetch2.Code != http.StatusBadRequest {
 		t.Fatalf("second fetch should fail with 400, got %d body=%s", recFetch2.Code, recFetch2.Body.String())
 	}
-	if !strings.Contains(strings.ToLower(recFetch2.Body.String()), "already fetched") {
-		t.Fatalf("expected already fetched error, got: %s", recFetch2.Body.String())
+	var respFetch2 map[string]interface{}
+	if err := json.Unmarshal(recFetch2.Body.Bytes(), &respFetch2); err != nil {
+		t.Fatalf("unmarshal second fetch response: %v", err)
+	}
+	if got := int(respFetch2["status_code"].(float64)); got != 10040 {
+		t.Fatalf("second fetch status_code = %d, want 10040; response=%v", got, respFetch2)
+	}
+	if got, _ := respFetch2["message"].(string); got != constant.Errno[10040] {
+		t.Fatalf("second fetch message = %q, want %q; response=%v", got, constant.Errno[10040], respFetch2)
 	}
 
 	token := adminLogin(t, e, testAdminUsername, initPassword)
@@ -523,14 +531,25 @@ func TestAdminRpcNodes_CRUD(t *testing.T) {
 	if nodeID == nil {
 		t.Fatal("CreateRpcNode missing id")
 	}
+	if got, _ := dataObj["purpose"].(string); got != mdb.RpcNodePurposeGeneral {
+		t.Fatalf("created purpose = %q, want %q", got, mdb.RpcNodePurposeGeneral)
+	}
 	nodeIDStr := fmt.Sprintf("%.0f", nodeID.(float64))
 
 	// Update.
 	rec = doPatchAdmin(e, "/admin/api/v1/rpc-nodes/"+nodeIDStr, map[string]interface{}{
-		"url": "https://eth-mainnet2.example.com",
+		"url":     "https://eth-mainnet2.example.com",
+		"purpose": mdb.RpcNodePurposeManualVerify,
 	}, token)
 	t.Logf("UpdateRpcNode: %s", rec.Body.String())
 	assertOK(t, rec)
+	updatedNode, err := data.GetRpcNodeByID(uint64(nodeID.(float64)))
+	if err != nil {
+		t.Fatalf("reload rpc node: %v", err)
+	}
+	if updatedNode.Purpose != mdb.RpcNodePurposeManualVerify {
+		t.Fatalf("updated purpose = %q, want %q", updatedNode.Purpose, mdb.RpcNodePurposeManualVerify)
+	}
 
 	// Health check — network likely unreachable in test, but route must not 404/500.
 	rec = doPostAdmin(e, "/admin/api/v1/rpc-nodes/"+nodeIDStr+"/health-check", nil, token)
@@ -543,6 +562,95 @@ func TestAdminRpcNodes_CRUD(t *testing.T) {
 	rec = doDeleteAdmin(e, "/admin/api/v1/rpc-nodes/"+nodeIDStr, token)
 	t.Logf("DeleteRpcNode: %s", rec.Body.String())
 	assertOK(t, rec)
+}
+
+func TestAdminRpcNodes_RejectsURLTypeMismatch(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+
+	rec := doPostAdmin(e, "/admin/api/v1/rpc-nodes", map[string]interface{}{
+		"network": "ethereum",
+		"url":     "wss://eth-mainnet.example.com",
+		"type":    mdb.RpcNodeTypeHttp,
+	}, token)
+	t.Logf("CreateRpcNode(http with wss): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected create mismatch to fail, got 200: %s", rec.Body.String())
+	}
+	assertErrorCode(t, rec, 10022)
+
+	rec = doPostAdmin(e, "/admin/api/v1/rpc-nodes", map[string]interface{}{
+		"network": "ethereum",
+		"url":     "https://eth-mainnet.example.com",
+		"type":    mdb.RpcNodeTypeWs,
+	}, token)
+	t.Logf("CreateRpcNode(ws with https): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected create mismatch to fail, got 200: %s", rec.Body.String())
+	}
+	assertErrorCode(t, rec, 10023)
+
+	rec = doPostAdmin(e, "/admin/api/v1/rpc-nodes", map[string]interface{}{
+		"network": "ethereum",
+		"url":     "https://eth-mainnet.example.com",
+		"type":    mdb.RpcNodeTypeHttp,
+		"purpose": "invalid-purpose",
+	}, token)
+	t.Logf("CreateRpcNode(invalid purpose): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected invalid purpose to fail, got 200: %s", rec.Body.String())
+	}
+	assertErrorCode(t, rec, 10020)
+
+	rec = doPostAdmin(e, "/admin/api/v1/rpc-nodes", map[string]interface{}{
+		"network": "ethereum",
+		"url":     "https://eth-mainnet.example.com",
+		"type":    mdb.RpcNodeTypeHttp,
+	}, token)
+	resp := assertOK(t, rec)
+	dataObj, _ := resp["data"].(map[string]interface{})
+	nodeID := uint64(dataObj["id"].(float64))
+	nodeIDStr := fmt.Sprintf("%d", nodeID)
+
+	rec = doPatchAdmin(e, "/admin/api/v1/rpc-nodes/"+nodeIDStr, map[string]interface{}{
+		"url": "wss://eth-mainnet.example.com",
+	}, token)
+	t.Logf("UpdateRpcNode(http with wss): status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected update mismatch to fail, got 200: %s", rec.Body.String())
+	}
+	assertErrorCode(t, rec, 10022)
+
+	node, err := data.GetRpcNodeByID(nodeID)
+	if err != nil {
+		t.Fatalf("reload rpc node: %v", err)
+	}
+	if node.Url != "https://eth-mainnet.example.com" {
+		t.Fatalf("node url changed after rejected update: %q", node.Url)
+	}
+}
+
+func TestAdminPathIDParseErrorUsesParamsErrno(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+
+	rec := doGetAdmin(e, "/admin/api/v1/api-keys/not-a-number/stats", token)
+	assertErrorCode(t, rec, 10009)
+}
+
+func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, wantCode int) {
+	t.Helper()
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected HTTP 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+	if got := int(resp["status_code"].(float64)); got != wantCode {
+		t.Fatalf("status_code = %d, want %d; response=%v", got, wantCode, resp)
+	}
+	if got, _ := resp["message"].(string); got != constant.Errno[wantCode] {
+		t.Fatalf("message = %q, want %q; response=%v", got, constant.Errno[wantCode], resp)
+	}
 }
 
 // ─── Wallets ─────────────────────────────────────────────────────────────────
@@ -693,9 +801,14 @@ func TestAdminOrders_MarkPaidSuccessAfterVerification(t *testing.T) {
 	})
 	defer restore()
 
-	rec := doPostAdmin(e, "/admin/api/v1/orders/"+order.TradeId+"/mark-paid", map[string]interface{}{
+	jsonBytes, _ := json.Marshal(map[string]interface{}{
 		"block_transaction_id": "block-admin-ok",
-	}, token)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/v1/orders/"+order.TradeId+"/mark-paid", strings.NewReader(string(jsonBytes)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
 	t.Logf("MarkOrderPaid success: status=%d body=%s", rec.Code, rec.Body.String())
 	assertOK(t, rec)
 	if !verified {
@@ -1211,8 +1324,11 @@ func TestAdminSettings_RejectsPrivateRateAPIURL(t *testing.T) {
 	if result["ok"] != false {
 		t.Fatalf("private rate.api_url result = %v, want ok=false", result)
 	}
-	if got, _ := result["error"].(string); !strings.Contains(got, "rate.api_url invalid") {
-		t.Fatalf("private rate.api_url error = %q", got)
+	if got := int(result["error_code"].(float64)); got != 10043 {
+		t.Fatalf("private rate.api_url error_code = %d, want 10043; result=%v", got, result)
+	}
+	if got, _ := result["error"].(string); got != constant.Errno[10043] {
+		t.Fatalf("private rate.api_url error = %q, want %q", got, constant.Errno[10043])
 	}
 }
 

@@ -60,7 +60,7 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 	network := strings.ToLower(strings.TrimSpace(req.Network))
 	notifyURL := strings.TrimSpace(req.NotifyUrl)
 	if err := security.ValidatePublicHTTPURL(notifyURL); err != nil {
-		return nil, err
+		return nil, constant.NotifyURLErr
 	}
 
 	gCreateTransactionLock.Lock()
@@ -351,16 +351,43 @@ func SubmitManualPayment(tradeId, blockTransactionId string) (*response.ManualPa
 	if err != nil {
 		return nil, err
 	}
-	if order.Status != mdb.StatusWaitPay {
-		return nil, constant.OrderNotWaitPay
+	return submitManualPaymentForOrder(order, blockTransactionId)
+}
+
+// SubmitCashierManualPayment is the public cashier variant. It rejects hashes
+// already stored on any order before touching RPC so repeated/public probes do
+// not spend RPC quota. Admin mark-paid intentionally keeps using
+// SubmitManualPayment and the existing verification path.
+func SubmitCashierManualPayment(tradeId, blockTransactionId string) (*response.ManualPaymentResponse, error) {
+	tradeId = strings.TrimSpace(tradeId)
+	blockTransactionId = strings.TrimSpace(blockTransactionId)
+
+	order, err := GetOrderInfoByTradeId(tradeId)
+	if err != nil {
+		return nil, err
 	}
-	if !isOnChainOrder(order.PayProvider) {
-		return nil, errors.New("order is not an on-chain payment order")
+	if err = validateManualPaymentOrder(order); err != nil {
+		return nil, err
+	}
+	if err = ensureManualBlockTransactionUnused(order, blockTransactionId); err != nil {
+		return nil, err
+	}
+	return submitManualPaymentForOrder(order, blockTransactionId)
+}
+
+func submitManualPaymentForOrder(order *mdb.Orders, blockTransactionId string) (*response.ManualPaymentResponse, error) {
+	blockTransactionId = strings.TrimSpace(blockTransactionId)
+	if err := validateManualPaymentOrder(order); err != nil {
+		return nil, err
 	}
 
 	verifiedBlockTransactionID, err := ValidateManualOrderPayment(order, blockTransactionId)
 	if err != nil {
-		return nil, err
+		var rspErr *constant.RspError
+		if errors.As(err, &rspErr) {
+			return nil, err
+		}
+		return nil, constant.ManualPaymentVerifyErr
 	}
 	if err = OrderProcessing(&request.OrderProcessingRequest{
 		ReceiveAddress:     order.ReceiveAddress,
@@ -383,6 +410,16 @@ func SubmitManualPayment(tradeId, blockTransactionId string) (*response.ManualPa
 		Status:             updatedOrder.Status,
 		BlockTransactionId: updatedOrder.BlockTransactionId,
 	}, nil
+}
+
+func validateManualPaymentOrder(order *mdb.Orders) error {
+	if order.Status != mdb.StatusWaitPay {
+		return constant.OrderNotWaitPay
+	}
+	if !isOnChainOrder(order.PayProvider) {
+		return constant.ManualPaymentProviderErr
+	}
+	return nil
 }
 
 func isOnChainOrder(payProvider string) bool {
@@ -645,7 +682,7 @@ func switchToOkPay(parent *mdb.Orders, token string) (*response.CheckoutCounterR
 	if err != nil {
 		_ = data.MarkProviderOrderFailed(subTradeID, mdb.PaymentProviderOkPay)
 		_ = data.ExpireOrderByTradeID(subTradeID)
-		return nil, err
+		return nil, constant.PaymentProviderCreateErr
 	}
 	if err = data.UpdateProviderOrderCreated(subTradeID, mdb.PaymentProviderOkPay, okpayOrder.ProviderOrderID, okpayOrder.PayURL); err != nil {
 		_ = data.MarkProviderOrderFailed(subTradeID, mdb.PaymentProviderOkPay)

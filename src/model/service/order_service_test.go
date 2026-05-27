@@ -80,8 +80,8 @@ func TestCreateTransactionRejectsPrivateNotifyURL(t *testing.T) {
 	req := newCreateTransactionRequest("order_private_notify_url", 1)
 	req.NotifyUrl = "http://127.0.0.1/notify"
 
-	if _, err := CreateTransaction(req, nil); err == nil {
-		t.Fatal("CreateTransaction returned nil error for private notify_url")
+	if _, err := CreateTransaction(req, nil); err != constant.NotifyURLErr {
+		t.Fatalf("CreateTransaction error = %v, want %v", err, constant.NotifyURLErr)
 	}
 }
 
