@@ -469,6 +469,33 @@ func TestCreateTransactionRejectsDisabledTonTokenBeforeRate(t *testing.T) {
 	}
 }
 
+func TestCreateTransactionRejectsEnabledMisconfiguredAptosUSDT(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	if err := dao.Mdb.Create(&mdb.Chain{Network: mdb.NetworkAptos, Enabled: true}).Error; err != nil {
+		t.Fatalf("create aptos chain: %v", err)
+	}
+	if err := dao.Mdb.Create(&mdb.ChainToken{
+		Network:         mdb.NetworkAptos,
+		Symbol:          "USDT",
+		ContractAddress: "",
+		Decimals:        6,
+		Enabled:         true,
+	}).Error; err != nil {
+		t.Fatalf("create aptos usdt token: %v", err)
+	}
+
+	req := newCreateTransactionRequest("order_aptos_misconfigured_usdt_1", 10)
+	req.Network = mdb.NetworkAptos
+	req.Token = "USDT"
+
+	_, err := CreateTransaction(req, nil)
+	if err != constant.SupportedAssetNotFound {
+		t.Fatalf("create misconfigured Aptos USDT error = %v, want %v", err, constant.SupportedAssetNotFound)
+	}
+}
+
 func TestCreateTransactionSupportedTonTokenWithoutRateReturnsRateError(t *testing.T) {
 	cleanup := testutil.SetupTestDatabases(t)
 	defer cleanup()

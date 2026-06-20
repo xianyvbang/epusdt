@@ -5,10 +5,11 @@ const (
 	ChainTokenStatusDisable = 2
 )
 
-// ChainToken describes a token to watch on a given chain. Replaces the
-// hardcoded USDT/USDC contract addresses in task/listen_eth.go. Scanners
-// load this table on startup (and refresh periodically) to learn which
-// contracts to subscribe to.
+// ChainToken describes a token to watch on a given chain. For EVM/TRON rows
+// ContractAddress is the token contract; for Solana it is the mint; for
+// TON it is the jetton master; for Aptos it is the Move asset identifier
+// (coin type, metadata address or object type). Native rows use an empty
+// ContractAddress.
 type ChainToken struct {
 	Network         string  `gorm:"column:network;size:32;uniqueIndex:chain_tokens_network_symbol_uindex,priority:1" json:"network" example:"tron"`
 	Symbol          string  `gorm:"column:symbol;size:32;uniqueIndex:chain_tokens_network_symbol_uindex,priority:2" json:"symbol" example:"USDT"`

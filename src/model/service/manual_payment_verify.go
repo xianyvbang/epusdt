@@ -89,6 +89,8 @@ func validateManualOrderPaymentDefault(order *mdb.Orders, blockTransactionID str
 		canonicalTxID, err = validateManualSolanaPayment(order, txID)
 	case mdb.NetworkTon:
 		canonicalTxID, err = validateManualTonPayment(order, txID)
+	case mdb.NetworkAptos:
+		canonicalTxID, err = ValidateManualAptosPayment(order, txID)
 	case mdb.NetworkEthereum, mdb.NetworkBsc, mdb.NetworkPolygon, mdb.NetworkPlasma:
 		canonicalTxID, err = validateManualEvmPayment(order, txID)
 	default:
@@ -123,7 +125,7 @@ func ensureManualBlockTransactionUnused(order *mdb.Orders, canonicalTxID string)
 
 func manualBlockTransactionIDIsHex(network string) bool {
 	switch strings.ToLower(strings.TrimSpace(network)) {
-	case mdb.NetworkTron, mdb.NetworkEthereum, mdb.NetworkBsc, mdb.NetworkPolygon, mdb.NetworkPlasma:
+	case mdb.NetworkTron, mdb.NetworkEthereum, mdb.NetworkBsc, mdb.NetworkPolygon, mdb.NetworkPlasma, mdb.NetworkAptos:
 		return true
 	default:
 		return false
@@ -149,7 +151,7 @@ func equivalentManualBlockTransactionIDs(network, canonicalTxID string) []string
 
 	add(canonicalTxID)
 	switch network {
-	case mdb.NetworkEthereum, mdb.NetworkBsc, mdb.NetworkPolygon, mdb.NetworkPlasma:
+	case mdb.NetworkEthereum, mdb.NetworkBsc, mdb.NetworkPolygon, mdb.NetworkPlasma, mdb.NetworkAptos:
 		body := strings.TrimPrefix(strings.TrimPrefix(canonicalTxID, "0x"), "0X")
 		body = strings.ToLower(body)
 		add("0x" + body)

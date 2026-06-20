@@ -44,6 +44,13 @@ func buildSupportedAssets() ([]response.NetworkTokenSupport, error) {
 		}
 		symbols := make([]string, 0, len(tokens))
 		for _, t := range tokens {
+			contractAddress := strings.TrimSpace(t.ContractAddress)
+			if network == mdb.NetworkAptos && !aptosPublicPaymentToken(t.Symbol) {
+				continue
+			}
+			if network == mdb.NetworkAptos && contractAddress == "" {
+				continue
+			}
 			sym := strings.ToUpper(strings.TrimSpace(t.Symbol))
 			if sym == "" {
 				continue
@@ -66,6 +73,15 @@ func buildSupportedAssets() ([]response.NetworkTokenSupport, error) {
 	}
 
 	return supports, nil
+}
+
+func aptosPublicPaymentToken(symbol string) bool {
+	switch strings.ToUpper(strings.TrimSpace(symbol)) {
+	case "USDT", "USDC":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetPublicConfig returns payment/site config consumed by cashier/frontends.

@@ -49,6 +49,11 @@ func normalizeLockAddress(network, address string) string {
 			return raw
 		}
 	}
+	if network == mdb.NetworkAptos {
+		if normalized, err := addressutil.NormalizeMoveAddress(address); err == nil {
+			return normalized
+		}
+	}
 	return address
 }
 

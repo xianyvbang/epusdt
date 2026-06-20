@@ -141,6 +141,8 @@ func (c *BaseAdminController) CloseOrder(ctx echo.Context) error {
 // @Summary      Mark order paid
 // @Description  Manually mark a waiting order as paid (operator补单)
 // @Description  TON accepts canonical ton:<receive_raw>:<lt>:<hash>, lt:hash, or a unique recent hash-only reference for the order receive address.
+// @Description  Aptos accepts a transaction hash.
+// @Description  Aptos automatic scanning polls fullnode ledger-version transaction ranges with a runtime cursor.
 // @Tags         Admin Orders
 // @Security     AdminJWT
 // @Accept       json

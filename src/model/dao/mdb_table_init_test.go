@@ -2,6 +2,7 @@ package dao
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GMWalletApp/epusdt/model/mdb"
@@ -71,6 +72,80 @@ func TestDefaultRpcNodesIncludesTonLiteGeneralNode(t *testing.T) {
 	}
 	if got.Status != mdb.RpcNodeStatusUnknown {
 		t.Fatalf("TON lite seed status = %q, want %q", got.Status, mdb.RpcNodeStatusUnknown)
+	}
+}
+
+func TestDefaultRpcNodesIncludesAptosPublicNode(t *testing.T) {
+	var got *mdb.RpcNode
+	nodes := defaultRpcNodes()
+	for i := range nodes {
+		node := nodes[i]
+		if node.Network == mdb.NetworkAptos {
+			got = &node
+			break
+		}
+	}
+
+	if got == nil {
+		t.Fatal("missing Aptos seed rpc node")
+	}
+	if got.Url != "https://aptos-rest.publicnode.com/" {
+		t.Fatalf("Aptos seed url = %q", got.Url)
+	}
+	if got.Type != mdb.RpcNodeTypeHttp {
+		t.Fatalf("Aptos seed type = %q, want %q", got.Type, mdb.RpcNodeTypeHttp)
+	}
+	if got.Purpose != mdb.RpcNodePurposeGeneral {
+		t.Fatalf("Aptos seed purpose = %q, want %q", got.Purpose, mdb.RpcNodePurposeGeneral)
+	}
+	if !got.Enabled {
+		t.Fatal("Aptos seed enabled = false, want true")
+	}
+	if got.Status != mdb.RpcNodeStatusUnknown {
+		t.Fatalf("Aptos seed status = %q, want %q", got.Status, mdb.RpcNodeStatusUnknown)
+	}
+}
+
+func TestSeedChainsIncludesAptos(t *testing.T) {
+	db := setupSeedTableTestDB(t, &mdb.Chain{})
+	Mdb = db
+
+	seedChains()
+
+	var row mdb.Chain
+	if err := Mdb.Where("network = ?", mdb.NetworkAptos).Take(&row).Error; err != nil {
+		t.Fatalf("load Aptos chain seed: %v", err)
+	}
+	if !row.Enabled {
+		t.Fatal("Aptos chain enabled = false, want true")
+	}
+}
+
+func TestSeedChainTokensIncludesAptosAssets(t *testing.T) {
+	db := setupSeedTableTestDB(t, &mdb.ChainToken{})
+	Mdb = db
+
+	seedChainTokens()
+
+	wantEnabled := map[string]bool{
+		mdb.NetworkAptos + "/USDC": true,
+		mdb.NetworkAptos + "/USDT": true,
+	}
+	wantContract := map[string]string{
+		mdb.NetworkAptos + "/USDT": "0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b",
+	}
+	for key, enabled := range wantEnabled {
+		parts := strings.Split(key, "/")
+		var row mdb.ChainToken
+		if err := Mdb.Where("network = ? AND symbol = ?", parts[0], parts[1]).Take(&row).Error; err != nil {
+			t.Fatalf("load token seed %s: %v", key, err)
+		}
+		if row.Enabled != enabled {
+			t.Fatalf("%s enabled = %v, want %v", key, row.Enabled, enabled)
+		}
+		if want, ok := wantContract[key]; ok && row.ContractAddress != want {
+			t.Fatalf("%s contract_address = %q, want %q", key, row.ContractAddress, want)
+		}
 	}
 }
 
@@ -191,6 +266,22 @@ func setupSeedSettingsTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(&mdb.Setting{}); err != nil {
 		t.Fatalf("migrate settings: %v", err)
+	}
+	return db
+}
+
+func setupSeedTableTestDB(t *testing.T, models ...interface{}) *gorm.DB {
+	t.Helper()
+	oldDB := Mdb
+	t.Cleanup(func() {
+		Mdb = oldDB
+	})
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "seed-table.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(models...); err != nil {
+		t.Fatalf("migrate seed table: %v", err)
 	}
 	return db
 }

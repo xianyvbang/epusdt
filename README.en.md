@@ -45,6 +45,7 @@ Deploy it privately, integrate with the HTTP API, and start receiving crypto pay
 | **Solana** | USDT, USDC |
 | **BEP20** (BSC) | USDT, USDC, BNB |
 | **Polygon** | USDT, USDC |
+| **Aptos** | USDC, USDT |
 | **More** | Expanding continuously |
 
 > Actual support depends on the [latest release](https://github.com/GMWalletApp/epusdt/releases) and the [official docs](https://epusdt.com).
@@ -68,7 +69,7 @@ No matter what kind of platform you operate, Epusdt can fit into existing paymen
 
 ## Core Features
 
-- **Multi-chain and multi-token** — TRC20, ERC20, BEP20, Polygon, and more
+- **Multi-chain and multi-token** — TRC20, ERC20, BEP20, Polygon, Aptos, and more
 - **Self-hosted** — full control of funds and wallet infrastructure
 - **Low-dependency runtime** — a single binary can run the service; low-traffic setups do not require MySQL + Redis
 - **Cross-platform** — supports x86 / ARM on Windows / Linux / Mac

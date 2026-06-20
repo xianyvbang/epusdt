@@ -40,7 +40,7 @@ func (c *BaseAdminController) ListChains(ctx echo.Context) error {
 // @Security     AdminJWT
 // @Accept       json
 // @Produce      json
-// @Param        network path string true "Network name (e.g. ton, tron, ethereum, solana)"
+// @Param        network path string true "Network name (e.g. ton, tron, ethereum, solana, aptos)"
 // @Param        request body admin.UpdateChainRequest true "Chain settings"
 // @Success      200 {object} response.ApiResponse
 // @Failure      400 {object} response.ApiResponse

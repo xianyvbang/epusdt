@@ -65,6 +65,7 @@ func seedChains() {
 		{Network: mdb.NetworkPolygon, DisplayName: "Polygon", Enabled: true, MinConfirmations: 3, ScanIntervalSec: 5},
 		{Network: mdb.NetworkPlasma, DisplayName: "Plasma", Enabled: true, MinConfirmations: 1, ScanIntervalSec: 5},
 		{Network: mdb.NetworkTon, DisplayName: "TON", Enabled: true, MinConfirmations: 1, ScanIntervalSec: 5},
+		{Network: mdb.NetworkAptos, DisplayName: "Aptos", Enabled: true, MinConfirmations: 1, ScanIntervalSec: 5},
 	}
 	if err := Mdb.Clauses(clause.OnConflict{DoNothing: true}).Create(&defaults).Error; err != nil {
 		color.Red.Printf("[store_db] seed chains err=%s\n", err)
@@ -102,6 +103,8 @@ func seedChainTokens() {
 		// TON
 		{Network: mdb.NetworkTon, Symbol: "TON", ContractAddress: "", Decimals: 9, Enabled: true},
 		{Network: mdb.NetworkTon, Symbol: "USDT", ContractAddress: "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe", Decimals: 6, Enabled: true},
+		{Network: mdb.NetworkAptos, Symbol: "USDC", ContractAddress: "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b", Decimals: 6, Enabled: true},
+		{Network: mdb.NetworkAptos, Symbol: "USDT", ContractAddress: "0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b", Decimals: 6, Enabled: true},
 	}
 	if err := Mdb.Clauses(clause.OnConflict{DoNothing: true}).Create(&defaults).Error; err != nil {
 		color.Red.Printf("[store_db] seed chain_tokens err=%s\n", err)
@@ -138,6 +141,7 @@ func defaultRpcNodes() []mdb.RpcNode {
 		{Network: mdb.NetworkPolygon, Url: "wss://polygon-bor-rpc.publicnode.com", Type: mdb.RpcNodeTypeWs, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkPlasma, Url: "wss://rpc.plasma.to", Type: mdb.RpcNodeTypeWs, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkTon, Url: "https://ton-blockchain.github.io/global.config.json", Type: mdb.RpcNodeTypeLite, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkAptos, Url: "https://aptos-rest.publicnode.com/", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkEthereum, Url: "https://rpc.epusdt.com/ethereum", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkBsc, Url: "https://rpc.epusdt.com/binance", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
 		{Network: mdb.NetworkPolygon, Url: "https://rpc.epusdt.com/polygon", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},

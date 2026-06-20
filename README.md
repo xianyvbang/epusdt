@@ -45,6 +45,7 @@
 | **Solana** | USDT、USDC |
 | **BEP20** (BSC) | USDT、USDC、BNB |
 | **Polygon** | USDT、USDC |
+| **Aptos** | USDC、USDT |
 | **更多** | 持续扩展中… |
 
 > 具体支持的链与代币以 [最新版本](https://github.com/GMWalletApp/epusdt/releases) 及 [官方文档](https://epusdt.com) 为准。
@@ -74,7 +75,7 @@ Epusdt 已完成第三方安全审计。
 
 ## 核心特性
 
-- **多链多币种** — 支持 TRC20、ERC20、BEP20、Polygon 等主流网络
+- **多链多币种** — 支持 TRC20、ERC20、BEP20、Polygon、Aptos 等主流网络
 - **私有化部署** — 资金完全自主掌控
 - **零依赖运行** — 单个二进制即可启动，低并发场景无需 MySQL + Redis
 - **跨平台** — 支持 x86 / ARM 架构的 Windows / Linux / Mac

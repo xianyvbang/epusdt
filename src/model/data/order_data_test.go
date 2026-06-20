@@ -184,3 +184,19 @@ func TestTonTransactionLockAddressUsesRawKey(t *testing.T) {
 		t.Fatalf("ton raw lock lookup = %q, want trade-ton", gotTradeID)
 	}
 }
+
+func TestAptosTransactionLockAddressUsesCanonicalKey(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	if err := LockTransaction(mdb.NetworkAptos, "0xA", "USDT", "trade-aptos", 1.23, time.Hour); err != nil {
+		t.Fatalf("lock aptos transaction: %v", err)
+	}
+	gotTradeID, err := GetTradeIdByWalletAddressAndAmountAndToken(mdb.NetworkAptos, "a", "USDT", 1.23)
+	if err != nil {
+		t.Fatalf("lookup aptos lock: %v", err)
+	}
+	if gotTradeID != "trade-aptos" {
+		t.Fatalf("aptos lock lookup = %q, want trade-aptos", gotTradeID)
+	}
+}

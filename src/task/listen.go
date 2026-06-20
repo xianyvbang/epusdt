@@ -15,6 +15,7 @@ func Start() {
 	go StartPlasmaWebSocketListener()
 	go StartTronBlockScannerListener()
 	go StartTonBlockScannerListener()
+	go StartAptosLedgerScannerListener()
 
 	c := cron.New()
 

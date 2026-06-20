@@ -113,6 +113,66 @@ func TestManualVerifyNormalizeTronTxIDAcceptsOptional0x(t *testing.T) {
 	}
 }
 
+func TestValidateManualAptosPayment(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	if err := dao.Mdb.Create(&mdb.Chain{Network: mdb.NetworkAptos, Enabled: true, MinConfirmations: 1}).Error; err != nil {
+		t.Fatalf("create aptos chain: %v", err)
+	}
+	usdc := "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b"
+	if err := dao.Mdb.Create(&mdb.ChainToken{
+		Network:         mdb.NetworkAptos,
+		Symbol:          "USDC",
+		ContractAddress: usdc,
+		Decimals:        6,
+		Enabled:         true,
+	}).Error; err != nil {
+		t.Fatalf("create aptos usdc token: %v", err)
+	}
+
+	receive, err := addressutil.NormalizeMoveAddress("0xa")
+	if err != nil {
+		t.Fatalf("normalize aptos receive: %v", err)
+	}
+	store, err := addressutil.NormalizeMoveAddress("0x11")
+	if err != nil {
+		t.Fatalf("normalize aptos store: %v", err)
+	}
+	senderStore, err := addressutil.NormalizeMoveAddress("0x12")
+	if err != nil {
+		t.Fatalf("normalize aptos sender store: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/transactions/by_hash/"):
+			_, _ = w.Write([]byte(`{"type":"user_transaction","success":true,"hash":"0xabc","version":"101","timestamp":"1700000000123456","payload":{"function":"0x1::primary_fungible_store::transfer","arguments":[{"inner":"` + usdc + `"},"` + receive + `","4200000"],"type":"entry_function_payload"},"events":[{"type":"0x1::fungible_asset::Withdraw","data":{"amount":"4200000","store":"` + senderStore + `"}},{"type":"0x1::fungible_asset::Deposit","data":{"amount":"4200000","store":"` + store + `"}}],"changes":[{"address":"` + senderStore + `","data":{"type":"0x1::fungible_asset::FungibleStore","data":{"metadata":{"inner":"` + usdc + `"}}},"type":"write_resource"},{"address":"` + store + `","data":{"type":"0x1::fungible_asset::FungibleStore","data":{"metadata":{"inner":"` + usdc + `"}}},"type":"write_resource"},{"address":"` + store + `","data":{"type":"0x1::object::ObjectCore","data":{"owner":"` + receive + `"}},"type":"write_resource"}]}`))
+		case r.URL.Path == "/v1":
+			_, _ = w.Write([]byte(`{"ledger_version":"101"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	overrideAptosFullnodeURLForTest(t, server.URL)
+
+	order := &mdb.Orders{
+		BaseModel:      mdb.BaseModel{ID: 1, CreatedAt: *carbon.NewTime(carbon.CreateFromTimestampMilli(1699999999000))},
+		Network:        mdb.NetworkAptos,
+		Token:          "USDC",
+		ActualAmount:   4.2,
+		ReceiveAddress: receive,
+	}
+	got, err := ValidateManualAptosPayment(order, "ABC")
+	if err != nil {
+		t.Fatalf("ValidateManualAptosPayment(): %v", err)
+	}
+	if got != "0xabc" {
+		t.Fatalf("canonical tx id = %q, want %q", got, "0xabc")
+	}
+}
+
 func TestParseManualTonTxRefAcceptsCanonicalLTAndHashOnly(t *testing.T) {
 	receiveRaw := "0:ba295e33b3c4c9b5265aa4ead1166a92931ce9abea120a8c5e91044a1257f89c"
 	hash := strings.Repeat("a", 64)

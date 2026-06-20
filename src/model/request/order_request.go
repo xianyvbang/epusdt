@@ -7,7 +7,7 @@ type CreateTransactionRequest struct {
 	OrderId     string  `json:"order_id" form:"order_id" validate:"required|maxLen:32" example:"ORD20260416001"`
 	Currency    string  `json:"currency" form:"currency" validate:"required" example:"cny"` // 法币 如：cny
 	Token       string  `json:"token" form:"token" example:"usdt"`                          // 币种 如：usdt、ton；可与 network 同时缺省创建占位订单
-	Network     string  `json:"network" form:"network" example:"tron"`                      // 网络 如：ton、tron；可与 token 同时缺省创建占位订单
+	Network     string  `json:"network" form:"network" example:"tron"`                      // 网络 如：ton、tron、aptos；可与 token 同时缺省创建占位订单
 	Amount      float64 `json:"amount" form:"amount" validate:"required|isFloat|gt:0.01" example:"100.00"`
 	NotifyUrl   string  `json:"notify_url" form:"notify_url" validate:"required" example:"https://example.com/notify"`
 	Signature   string  `json:"signature" form:"signature" validate:"required" example:"a1b2c3d4e5f6..."`
@@ -58,7 +58,7 @@ func (r ManualPaymentRequest) Translates() map[string]string {
 type SwitchNetworkRequest struct {
 	TradeId string `json:"trade_id" validate:"required" example:"3nQ9pL2xV7sK1mR8cT4yB_aZ"`
 	Token   string `json:"token" validate:"required" example:"USDT"`
-	Network string `json:"network" validate:"required" example:"okpay,tron,solana,ethereum"`
+	Network string `json:"network" validate:"required" example:"okpay,tron,solana,ethereum,aptos"`
 }
 
 func (r SwitchNetworkRequest) Translates() map[string]string {

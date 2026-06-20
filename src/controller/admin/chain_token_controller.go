@@ -12,8 +12,10 @@ import (
 
 // CreateChainTokenRequest is the payload for creating a chain token.
 type CreateChainTokenRequest struct {
-	Network         string  `json:"network" validate:"required" example:"tron"`
-	Symbol          string  `json:"symbol" validate:"required|maxLen:32" example:"USDT"`
+	Network string `json:"network" validate:"required" example:"tron"`
+	Symbol  string `json:"symbol" validate:"required|maxLen:32" example:"USDT"`
+	// Contract address or chain-native asset identifier. For Aptos this is
+	// the Move asset id (coin type, metadata address, or object type).
 	ContractAddress string  `json:"contract_address" example:"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"`
 	Decimals        int     `json:"decimals" example:"6"`
 	Enabled         *bool   `json:"enabled" example:"true"`
@@ -22,6 +24,8 @@ type CreateChainTokenRequest struct {
 
 // UpdateChainTokenRequest is the payload for updating a chain token.
 type UpdateChainTokenRequest struct {
+	// Contract address or chain-native asset identifier. For Aptos this is
+	// the Move asset id (coin type, metadata address, or object type).
 	ContractAddress *string  `json:"contract_address" example:"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"`
 	Decimals        *int     `json:"decimals" example:"6"`
 	Enabled         *bool    `json:"enabled" example:"true"`
@@ -31,6 +35,17 @@ type UpdateChainTokenRequest struct {
 // ChangeChainTokenStatusRequest is the payload for toggling chain token status.
 type ChangeChainTokenStatusRequest struct {
 	Enabled bool `json:"enabled" example:"true"`
+}
+
+func validateChainTokenPaymentConfig(row *mdb.ChainToken) error {
+	if row == nil {
+		return nil
+	}
+	contractAddress := strings.TrimSpace(row.ContractAddress)
+	if row.Enabled && row.Network == mdb.NetworkAptos && contractAddress == "" {
+		return constant.ParamsMarshalErr
+	}
+	return nil
 }
 
 // ListChainTokens returns rows, optionally filtered by network.
@@ -54,7 +69,7 @@ func (c *BaseAdminController) ListChainTokens(ctx echo.Context) error {
 
 // CreateChainToken inserts a new row. Default decimals=6 when 0 passed.
 // @Summary      Create chain token
-// @Description  Create a new chain token entry
+// @Description  Create a new chain token entry. For Aptos, contract_address stores the Move asset id rather than an EVM contract address.
 // @Tags         Admin Chain Tokens
 // @Security     AdminJWT
 // @Accept       json
@@ -87,6 +102,9 @@ func (c *BaseAdminController) CreateChainToken(ctx echo.Context) error {
 		Enabled:         enabled,
 		MinAmount:       req.MinAmount,
 	}
+	if err := validateChainTokenPaymentConfig(row); err != nil {
+		return c.FailJson(ctx, err)
+	}
 	if err := data.CreateChainToken(row); err != nil {
 		return c.FailJson(ctx, err)
 	}
@@ -95,7 +113,7 @@ func (c *BaseAdminController) CreateChainToken(ctx echo.Context) error {
 
 // UpdateChainToken patches mutable columns.
 // @Summary      Update chain token
-// @Description  Patch chain token fields
+// @Description  Patch chain token fields. For Aptos, contract_address stores the Move asset id rather than an EVM contract address.
 // @Tags         Admin Chain Tokens
 // @Security     AdminJWT
 // @Accept       json
@@ -115,17 +133,34 @@ func (c *BaseAdminController) UpdateChainToken(ctx echo.Context) error {
 		return c.FailJson(ctx, constant.ParamsMarshalErr)
 	}
 	fields := map[string]interface{}{}
+	existing, err := data.GetChainTokenByID(id)
+	if err != nil {
+		return c.FailJson(ctx, err)
+	}
+	if existing == nil {
+		existing = &mdb.ChainToken{}
+	}
+	next := *existing
 	if req.ContractAddress != nil {
-		fields["contract_address"] = *req.ContractAddress
+		next.ContractAddress = strings.TrimSpace(*req.ContractAddress)
+		fields["contract_address"] = next.ContractAddress
 	}
 	if req.Decimals != nil {
+		next.Decimals = *req.Decimals
 		fields["decimals"] = *req.Decimals
 	}
 	if req.Enabled != nil {
+		next.Enabled = *req.Enabled
 		fields["enabled"] = *req.Enabled
 	}
 	if req.MinAmount != nil {
+		next.MinAmount = *req.MinAmount
 		fields["min_amount"] = *req.MinAmount
+	}
+	if next.ID > 0 {
+		if err = validateChainTokenPaymentConfig(&next); err != nil {
+			return c.FailJson(ctx, err)
+		}
 	}
 	if err := data.UpdateChainTokenFields(id, fields); err != nil {
 		return c.FailJson(ctx, err)
@@ -153,6 +188,17 @@ func (c *BaseAdminController) ChangeChainTokenStatus(ctx echo.Context) error {
 	req := new(ChangeChainTokenStatusRequest)
 	if err := ctx.Bind(req); err != nil {
 		return c.FailJson(ctx, constant.ParamsMarshalErr)
+	}
+	row, err := data.GetChainTokenByID(id)
+	if err != nil {
+		return c.FailJson(ctx, err)
+	}
+	if row != nil && row.ID > 0 {
+		next := *row
+		next.Enabled = req.Enabled
+		if err = validateChainTokenPaymentConfig(&next); err != nil {
+			return c.FailJson(ctx, err)
+		}
 	}
 	if err := data.UpdateChainTokenFields(id, map[string]interface{}{"enabled": req.Enabled}); err != nil {
 		return c.FailJson(ctx, err)

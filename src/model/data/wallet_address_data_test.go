@@ -103,3 +103,20 @@ func TestAddWalletAddressWithNetworkNormalizesTonAddressVariants(t *testing.T) {
 		t.Fatalf("add equivalent ton wallet error = %v, want already exists", err)
 	}
 }
+
+func TestAddWalletAddressWithNetworkNormalizesMoveAddressVariants(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	want := "0x000000000000000000000000000000000000000000000000000000000000000a"
+	row, err := AddWalletAddressWithNetwork(mdb.NetworkAptos, " A ")
+	if err != nil {
+		t.Fatalf("add aptos wallet: %v", err)
+	}
+	if row.Address != want {
+		t.Fatalf("stored Aptos address = %q, want %q", row.Address, want)
+	}
+	if _, err = AddWalletAddressWithNetwork(mdb.NetworkAptos, "0x0A"); err != constant.WalletAddressAlreadyExists {
+		t.Fatalf("add equivalent aptos wallet error = %v, want already exists", err)
+	}
+}

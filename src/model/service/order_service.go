@@ -54,6 +54,11 @@ func normalizeOrderAddressByNetwork(network, address string) string {
 			return normalized
 		}
 		return address
+	case mdb.NetworkAptos:
+		if normalized, err := addressutil.NormalizeMoveAddress(address); err == nil {
+			return normalized
+		}
+		return address
 	default:
 		return address
 	}
@@ -65,6 +70,17 @@ func ensureEnabledOrderAsset(network, token string) (*mdb.ChainToken, error) {
 		return nil, err
 	}
 	if tokenRow == nil || tokenRow.ID == 0 {
+		return nil, constant.SupportedAssetNotFound
+	}
+	if tokenRow.Network == mdb.NetworkAptos {
+		switch NormalizeAptosPaymentSymbol(tokenRow.Symbol) {
+		case "USDT", "USDC":
+		default:
+			return nil, constant.SupportedAssetNotFound
+		}
+	}
+	contractAddress := strings.TrimSpace(tokenRow.ContractAddress)
+	if tokenRow.Network == mdb.NetworkAptos && contractAddress == "" {
 		return nil, constant.SupportedAssetNotFound
 	}
 	return tokenRow, nil

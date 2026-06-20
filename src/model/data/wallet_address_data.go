@@ -41,6 +41,9 @@ func normalizeWalletAddressByNetworkE(network, address string) (string, error) {
 	if network == mdb.NetworkTon {
 		return addressutil.NormalizeTonAddress(address)
 	}
+	if network == mdb.NetworkAptos {
+		return addressutil.NormalizeMoveAddress(address)
+	}
 	return normalizeWalletAddressByNetwork(network, address), nil
 }
 
