@@ -6,6 +6,7 @@ const (
 	RpcNodeTypeHttp = "http"
 	RpcNodeTypeWs   = "ws"
 	RpcNodeTypeLite = "lite"
+	RpcNodeTypeOkx  = "okx"
 )
 
 const (
@@ -25,8 +26,8 @@ const (
 type RpcNode struct {
 	Network string `gorm:"column:network;size:32;index:rpc_nodes_network_status_index,priority:1" json:"network" example:"tron"`
 	Url     string `gorm:"column:url;size:512" json:"url" example:"https://api.trongrid.io"`
-	// 连接类型 http=HTTP请求 ws=WebSocket长连接 lite=TON liteserver配置
-	Type    string `gorm:"column:type;size:16" json:"type" enums:"http,ws,lite" example:"http"`
+	// 连接类型 http=HTTP请求 ws=WebSocket长连接 lite=TON liteserver配置 okx=OKX Explorer HTML
+	Type    string `gorm:"column:type;size:16" json:"type" enums:"http,ws,lite,okx" example:"http"`
 	Weight  int    `gorm:"column:weight;default:1" json:"weight" example:"1"`
 	ApiKey  string `gorm:"column:api_key;size:255" json:"api_key" example:"your-api-key"`
 	Enabled bool   `gorm:"column:enabled;default:true" json:"enabled" example:"true"`

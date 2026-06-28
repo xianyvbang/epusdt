@@ -16,8 +16,8 @@ import (
 type CreateRpcNodeRequest struct {
 	Network string `json:"network" validate:"required" example:"tron"`
 	Url     string `json:"url" validate:"required" example:"https://api.trongrid.io"`
-	// 连接类型 http=HTTP请求 ws=WebSocket长连接 lite=TON liteserver配置
-	Type    string `json:"type" validate:"required|in:http,ws,lite" enums:"http,ws,lite" example:"http"`
+	// 连接类型 http=HTTP请求 ws=WebSocket长连接 lite=TON liteserver配置 okx=OKX Explorer HTML
+	Type    string `json:"type" validate:"required|in:http,ws,lite,okx" enums:"http,ws,lite,okx" example:"http"`
 	Weight  int    `json:"weight" example:"1"`
 	ApiKey  string `json:"api_key" example:""`
 	Enabled *bool  `json:"enabled" example:"true"`
@@ -90,12 +90,16 @@ func (c *BaseAdminController) CreateRpcNode(ctx echo.Context) error {
 	if err := validateRpcNodeURLForType(nodeURL, nodeType); err != nil {
 		return c.FailJson(ctx, err)
 	}
+	apiKey, err := rpcNodeAPIKeyFromRequest(req.ApiKey, nodeType)
+	if err != nil {
+		return c.FailJson(ctx, err)
+	}
 	row := &mdb.RpcNode{
 		Network:       strings.ToLower(strings.TrimSpace(req.Network)),
 		Url:           nodeURL,
 		Type:          nodeType,
 		Weight:        weight,
-		ApiKey:        req.ApiKey,
+		ApiKey:        apiKey,
 		Enabled:       enabled,
 		Purpose:       purpose,
 		Status:        mdb.RpcNodeStatusUnknown,
@@ -128,15 +132,15 @@ func (c *BaseAdminController) UpdateRpcNode(ctx echo.Context) error {
 	if err := ctx.Bind(req); err != nil {
 		return c.FailJson(ctx, constant.ParamsMarshalErr)
 	}
+	row, err := data.GetRpcNodeByID(id)
+	if err != nil {
+		return c.FailJson(ctx, err)
+	}
+	if row.ID == 0 {
+		return c.FailJson(ctx, constant.RpcNodeNotFoundErr)
+	}
 	fields := map[string]interface{}{}
 	if req.Url != nil {
-		row, err := data.GetRpcNodeByID(id)
-		if err != nil {
-			return c.FailJson(ctx, err)
-		}
-		if row.ID == 0 {
-			return c.FailJson(ctx, constant.RpcNodeNotFoundErr)
-		}
 		nodeURL := strings.TrimSpace(*req.Url)
 		if err := validateRpcNodeURLForType(nodeURL, row.Type); err != nil {
 			return c.FailJson(ctx, err)
@@ -147,7 +151,11 @@ func (c *BaseAdminController) UpdateRpcNode(ctx echo.Context) error {
 		fields["weight"] = *req.Weight
 	}
 	if req.ApiKey != nil {
-		fields["api_key"] = *req.ApiKey
+		apiKey, err := rpcNodeAPIKeyFromRequest(*req.ApiKey, row.Type)
+		if err != nil {
+			return c.FailJson(ctx, err)
+		}
+		fields["api_key"] = apiKey
 	}
 	if req.Enabled != nil {
 		fields["enabled"] = *req.Enabled
@@ -233,6 +241,11 @@ func rpcNodePurposeFromRequest(raw string) (string, error) {
 	}
 }
 
+func rpcNodeAPIKeyFromRequest(raw string, nodeType string) (string, error) {
+	apiKey := strings.TrimSpace(raw)
+	return apiKey, nil
+}
+
 func validateRpcNodeURLForType(rawURL string, nodeType string) error {
 	rawURL = strings.TrimSpace(rawURL)
 	nodeType = strings.ToLower(strings.TrimSpace(nodeType))
@@ -257,6 +270,14 @@ func validateRpcNodeURLForType(rawURL string, nodeType string) error {
 			return nil
 		}
 		return constant.RpcNodeHTTPURLErr
+	case mdb.RpcNodeTypeOkx:
+		if scheme != "https" {
+			return constant.RpcNodeHTTPURLErr
+		}
+		if !strings.Contains(rawURL, "{0}") && !strings.Contains(rawURL, "{address}") {
+			return constant.RpcNodeURLErr
+		}
+		return nil
 	default:
 		return constant.RpcNodeTypeErr
 	}

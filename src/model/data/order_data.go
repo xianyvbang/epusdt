@@ -24,6 +24,17 @@ type PendingCallbackOrder struct {
 	UpdatedAt       carbon.Time `gorm:"column:updated_at"`
 }
 
+// ActiveTransactionLock is the scanner-facing view of an unexpired runtime
+// reservation. Scanners use it to poll only addresses that currently have
+// payable orders.
+type ActiveTransactionLock struct {
+	Network   string
+	Address   string
+	Token     string
+	TradeId   string
+	ExpiresAt time.Time
+}
+
 func normalizeAmount(amount float64, precision int) (int64, string) {
 	precision = NormalizeAmountPrecision(precision)
 	value := decimal.NewFromFloat(amount).Round(int32(precision))
@@ -529,4 +540,37 @@ func UnLockTransactionByTradeId(tradeID string) error {
 
 func CleanupExpiredTransactionLocks() error {
 	return dao.RuntimeDB.Where("expires_at <= ?", time.Now()).Delete(&mdb.TransactionLock{}).Error
+}
+
+// ListActiveTransactionLocks returns unexpired runtime reservations. When
+// networks is non-empty, only those normalized networks are included.
+func ListActiveTransactionLocks(networks ...string) ([]ActiveTransactionLock, error) {
+	now := time.Now()
+	query := dao.RuntimeDB.Model(&mdb.TransactionLock{}).
+		Select("network", "address", "token", "trade_id", "expires_at").
+		Where("expires_at > ?", now)
+
+	if len(networks) > 0 {
+		normalized := make([]string, 0, len(networks))
+		seen := make(map[string]struct{}, len(networks))
+		for _, network := range networks {
+			network = normalizeLockNetwork(network)
+			if network == "" {
+				continue
+			}
+			if _, ok := seen[network]; ok {
+				continue
+			}
+			seen[network] = struct{}{}
+			normalized = append(normalized, network)
+		}
+		if len(normalized) == 0 {
+			return nil, nil
+		}
+		query = query.Where("network IN ?", normalized)
+	}
+
+	var rows []ActiveTransactionLock
+	err := query.Order("network ASC, address ASC, created_at ASC").Find(&rows).Error
+	return rows, err
 }

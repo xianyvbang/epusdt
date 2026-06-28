@@ -50,6 +50,7 @@ var Errno = map[int]string{
 	10044: "invalid order redirect url",
 	10045: "order api key unavailable",
 	10046: "failed to build epay return signature",
+	10047: "rpc node api key required",
 }
 
 var (
@@ -100,6 +101,7 @@ var (
 	OrderRedirectURLErr        = Err(10044)
 	OrderApiKeyUnavailableErr  = Err(10045)
 	EPayReturnSignatureErr     = Err(10046)
+	RpcNodeApiKeyErr           = Err(10047)
 )
 
 type RspError struct {

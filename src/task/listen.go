@@ -36,6 +36,15 @@ func Start() {
 	}
 	log.Sugar.Info("[task] RpcHealthJob scheduled successfully (@every 30s)")
 
+	// OKX/OKLink Explorer polling for address-level token transfers. It is a
+	// no-op unless enabled type=okx rpc_nodes exist.
+	_, err = c.AddJob("@every "+okxExplorerPollInterval.String(), OkxExplorerJob{})
+	if err != nil {
+		log.Sugar.Errorf("[task] Failed to add OkxExplorerJob: %v", err)
+		return
+	}
+	log.Sugar.Infof("[task] OkxExplorerJob scheduled successfully (@every %s)", okxExplorerPollInterval)
+
 	c.Start()
 	log.Sugar.Info("[task] Task scheduler started")
 }
