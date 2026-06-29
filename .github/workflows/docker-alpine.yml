@@ -1,9 +1,7 @@
 name: docker-alpine-epusdt
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 env:
   DOCKERHUB_NAMESPACE: gmwallet
