@@ -1,6 +1,7 @@
 # Releasing
 
 This repository publishes versioned binaries to GitHub Releases when a tag is pushed.
+It also builds and publishes a Docker image to GitHub Container Registry (GHCR).
 
 ## What gets published
 
@@ -42,7 +43,47 @@ git push origin v1.0.0
 ```
 
 4. Wait for the `release` workflow to finish on GitHub.
-5. Download the generated binaries from the GitHub Release page.
+5. Wait for the `Docker Image` workflow to finish on GitHub if you need a container image.
+6. Download the generated binaries from the GitHub Release page, or deploy the GHCR image.
+
+## Docker image
+
+Pushing a tag like `v1.2.3` publishes:
+
+- `ghcr.io/xianyvbang/epusdt:1.2.3`
+- `ghcr.io/xianyvbang/epusdt:1.2`
+- `ghcr.io/xianyvbang/epusdt:1`
+- `ghcr.io/xianyvbang/epusdt:v1.2.3`
+- `ghcr.io/xianyvbang/epusdt:latest`
+- `ghcr.io/xianyvbang/epusdt:sha-<commit>`
+
+For example, after pushing `v1.2.3`, update the production compose file:
+
+```yaml
+services:
+  epusdt:
+    image: ghcr.io/xianyvbang/epusdt:1.2.3
+    restart: always
+    network_mode: host
+    environment:
+      EPUSDT_CONFIG: /data/.env
+    volumes:
+      - ./data:/data
+```
+
+Then replace the running container:
+
+```bash
+docker compose pull epusdt
+docker compose up -d --no-deps --force-recreate epusdt
+docker compose logs -f --tail=100 epusdt
+```
+
+If the GHCR package is private, log in on the production server first:
+
+```bash
+echo "<github-token>" | docker login ghcr.io -u <github-username> --password-stdin
+```
 
 ## Verify a release
 
