@@ -33,13 +33,19 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref }}
 
-      - name: Use Latest Release Config For Manual Runs
-        if: github.event_name == 'workflow_dispatch'
+      - name: Prepare GoReleaser Config
+        id: goreleaser_config
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          git fetch origin "$DEFAULT_BRANCH"
-          git checkout "origin/$DEFAULT_BRANCH" -- src/.goreleaser.yaml
+          config_path=".goreleaser.yaml"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            git fetch origin "$DEFAULT_BRANCH"
+            config_path="$RUNNER_TEMP/.goreleaser.yaml"
+            git show "origin/$DEFAULT_BRANCH:src/.goreleaser.yaml" > "$config_path"
+          fi
+          echo "path=$config_path" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Tag Commit Is On Default Branch
         env:
@@ -84,7 +90,7 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           workdir: src
-          args: release --clean
+          args: release --clean --config ${{ steps.goreleaser_config.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
