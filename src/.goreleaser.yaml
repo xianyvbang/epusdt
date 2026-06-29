@@ -31,7 +31,6 @@ archives:
     name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     files:
       - .env.example
-      - static/**
     format_overrides:
       - goos: windows
         formats:
@@ -48,6 +47,8 @@ release:
     owner: xianyvbang
     name: epusdt
   prerelease: auto
+  mode: replace
+  replace_existing_artifacts: true
 
 changelog:
   sort: asc
