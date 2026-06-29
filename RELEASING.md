@@ -1,6 +1,6 @@
 # Releasing
 
-This repository publishes versioned binaries to GitHub Releases when a tag is pushed.
+This repository publishes versioned binaries to GitHub Releases when a stable tag is pushed.
 It also builds and publishes a Docker image to GitHub Container Registry (GHCR).
 
 ## What gets published
@@ -107,5 +107,7 @@ The resulting artifacts will be generated under `src/dist/`.
 ## Release candidates
 
 If you use tags like `v1.2.3-rc1`, GoReleaser will mark the GitHub release as a prerelease.
+
+Prerelease tags that contain a hyphen, such as `v1.2.3-rc1` or `v0.0.0-dev`, build Docker images only and do not trigger the binary release workflow.
 
 For a final tag like `v1.2.3`, the release workflow forces GoReleaser to compare against the previous stable tag instead of the latest `rc` tag. This keeps the final changelog focused on stable-to-stable changes.
