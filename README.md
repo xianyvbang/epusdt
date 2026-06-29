@@ -101,6 +101,55 @@ Epusdt 已完成第三方安全审计。
 
 ---
 
+## Docker Compose 镜像替换
+
+如果你已经通过 Docker Compose 部署，并且配置与数据库都挂载在宿主机 `./data` 目录，可以直接替换镜像而不重建数据。
+
+推荐的 `docker-compose.yml`：
+
+```yaml
+services:
+  epusdt:
+    image: ghcr.io/xianyvbang/epusdt:latest
+    restart: always
+    network_mode: host
+    environment:
+      EPUSDT_CONFIG: /data/.env
+    volumes:
+      - ./data:/data
+```
+
+如需固定版本，把 `latest` 换成具体 tag，例如：
+
+```yaml
+image: ghcr.io/xianyvbang/epusdt:0.0.1-dev
+```
+
+替换线上容器前，先备份数据目录：
+
+```bash
+cd /path/to/epusdt
+tar czf data.bak.$(date +%F-%H%M%S).tar.gz data
+```
+
+拉取新镜像并重建容器：
+
+```bash
+docker compose pull epusdt
+docker compose up -d --no-deps --force-recreate epusdt
+docker compose logs -f --tail=100 epusdt
+```
+
+如果 GHCR 镜像是私有包，需要先在服务器登录：
+
+```bash
+echo "<github-token>" | docker login ghcr.io -u xianyvbang --password-stdin
+```
+
+注意不要执行 `docker compose down -v`，也不要删除 `data` 目录，否则可能丢失配置与 SQLite 数据。
+
+---
+
 ## 项目结构
 
 ```text
