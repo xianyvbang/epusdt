@@ -45,7 +45,7 @@ snapshot:
 
 release:
   github:
-    owner: GMwalletApp
+    owner: xianyvbang
     name: epusdt
   prerelease: auto
 
