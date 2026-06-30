@@ -28,7 +28,7 @@ var (
 	TgBotToken         string
 	TgProxy            string
 	TgManage           int64
-	BuildVersion       = "0.0.2-dev"
+	BuildVersion       = "0.0.3-dev"
 	BuildCommit        = "none"
 	BuildDate          = "unknown"
 	configRootPath     string

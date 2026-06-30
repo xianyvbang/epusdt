@@ -14,7 +14,15 @@ RUN go build -trimpath -ldflags="-s -w -X github.com/GMWalletApp/epusdt/config.B
 
 FROM alpine:latest AS runner
 ENV TZ=Asia/Shanghai
-RUN apk --no-cache add ca-certificates tzdata
+ENV CHROME_BIN=/usr/bin/chromium-browser
+RUN apk --no-cache add \
+      ca-certificates \
+      chromium \
+      freetype \
+      harfbuzz \
+      nss \
+      ttf-freefont \
+      tzdata
 ARG API_RATE_URL=""
 
 WORKDIR /app
