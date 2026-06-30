@@ -106,6 +106,75 @@ func TestDefaultRpcNodesIncludesAptosPublicNode(t *testing.T) {
 	}
 }
 
+func TestSeedRpcNodesBackfillsDefaultOkxNodes(t *testing.T) {
+	db := setupSeedTableTestDB(t, &mdb.RpcNode{})
+	Mdb = db
+
+	seedRpcNodes()
+
+	var rows []mdb.RpcNode
+	if err := Mdb.Where("type = ?", mdb.RpcNodeTypeOkx).Order("network ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load okx rpc nodes: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("okx rpc node count = %d, want 3", len(rows))
+	}
+
+	wantChains := map[string]string{
+		mdb.NetworkBsc:      "https://web3.okx.com/zh-hans/explorer/bsc/address/{address}/token-transfer",
+		mdb.NetworkEthereum: "https://web3.okx.com/zh-hans/explorer/eth/address/{address}/token-transfer",
+		mdb.NetworkPolygon:  "https://web3.okx.com/zh-hans/explorer/polygon/address/{address}/token-transfer",
+	}
+	for _, row := range rows {
+		wantURL, ok := wantChains[row.Network]
+		if !ok {
+			t.Fatalf("unexpected okx network %q", row.Network)
+		}
+		if row.Url != wantURL {
+			t.Fatalf("%s okx url = %q, want %q", row.Network, row.Url, wantURL)
+		}
+		if !row.Enabled {
+			t.Fatalf("%s okx enabled = false, want true", row.Network)
+		}
+		if row.Purpose != mdb.RpcNodePurposeGeneral {
+			t.Fatalf("%s okx purpose = %q, want %q", row.Network, row.Purpose, mdb.RpcNodePurposeGeneral)
+		}
+		if row.Status != mdb.RpcNodeStatusUnknown {
+			t.Fatalf("%s okx status = %q, want %q", row.Network, row.Status, mdb.RpcNodeStatusUnknown)
+		}
+	}
+}
+
+func TestSeedRpcNodesSkipsDefaultOkxNodesWhenAnyOkxExists(t *testing.T) {
+	db := setupSeedTableTestDB(t, &mdb.RpcNode{})
+	Mdb = db
+	existing := mdb.RpcNode{
+		Network: mdb.NetworkBsc,
+		Url:     "https://example.com/explorer/{address}",
+		Type:    mdb.RpcNodeTypeOkx,
+		Weight:  9,
+		Enabled: false,
+		Purpose: mdb.RpcNodePurposeBoth,
+		Status:  mdb.RpcNodeStatusUnknown,
+	}
+	if err := Mdb.Create(&existing).Error; err != nil {
+		t.Fatalf("precreate okx rpc node: %v", err)
+	}
+
+	seedRpcNodes()
+
+	var rows []mdb.RpcNode
+	if err := Mdb.Where("type = ?", mdb.RpcNodeTypeOkx).Find(&rows).Error; err != nil {
+		t.Fatalf("load okx rpc nodes: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("okx rpc node count = %d, want only existing node", len(rows))
+	}
+	if rows[0].Url != existing.Url {
+		t.Fatalf("okx url = %q, want existing %q", rows[0].Url, existing.Url)
+	}
+}
+
 func TestSeedChainsIncludesAptos(t *testing.T) {
 	db := setupSeedTableTestDB(t, &mdb.Chain{})
 	Mdb = db

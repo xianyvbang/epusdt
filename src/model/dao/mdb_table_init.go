@@ -130,6 +130,7 @@ func seedRpcNodes() {
 			color.Red.Printf("[store_db] seed rpc_nodes err=%s\n", err)
 		}
 	}
+	seedDefaultOkxRpcNodes()
 }
 
 func defaultRpcNodes() []mdb.RpcNode {
@@ -147,6 +148,35 @@ func defaultRpcNodes() []mdb.RpcNode {
 		{Network: mdb.NetworkPolygon, Url: "https://rpc.epusdt.com/polygon", Type: mdb.RpcNodeTypeHttp, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeManualVerify, Status: mdb.RpcNodeStatusUnknown},
 	}
 	return defaults
+}
+
+// seedDefaultOkxRpcNodes backfills OKX Explorer nodes for packaged frontends
+// that cannot create them. If any OKX node already exists, admin-managed
+// configuration wins and this seed does nothing.
+func seedDefaultOkxRpcNodes() {
+	var count int64
+	if err := Mdb.Model(&mdb.RpcNode{}).
+		Where("type = ?", mdb.RpcNodeTypeOkx).
+		Count(&count).Error; err != nil {
+		color.Red.Printf("[store_db] seed okx rpc_nodes check err=%s\n", err)
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	defaults := defaultOkxRpcNodes()
+	if err := Mdb.Create(&defaults).Error; err != nil {
+		color.Red.Printf("[store_db] seed okx rpc_nodes err=%s\n", err)
+	}
+}
+
+func defaultOkxRpcNodes() []mdb.RpcNode {
+	return []mdb.RpcNode{
+		{Network: mdb.NetworkBsc, Url: "https://web3.okx.com/zh-hans/explorer/bsc/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkEthereum, Url: "https://web3.okx.com/zh-hans/explorer/eth/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkPolygon, Url: "https://web3.okx.com/zh-hans/explorer/polygon/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+	}
 }
 
 func backfillRpcNodePurpose() {
