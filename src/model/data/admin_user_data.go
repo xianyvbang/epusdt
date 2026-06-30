@@ -40,39 +40,47 @@ type InitialAdminPasswordHashInfo struct {
 // can print it to the console. Idempotent — subsequent calls return
 // ("", false, nil).
 func EnsureDefaultAdmin() (password string, created bool, err error) {
-	if err := purgeDeletedInitialAdminPasswordPlain(); err != nil {
+	if err := dao.Mdb.Transaction(func(tx *gorm.DB) error {
+		if err := purgeDeletedInitialAdminPasswordPlainTx(tx); err != nil {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&mdb.AdminUser{}).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+
+		password = randomAdminPassword()
+		hash, err := HashPassword(password)
+		if err != nil {
+			return err
+		}
+		user := &mdb.AdminUser{
+			Username:     defaultAdminUsername,
+			PasswordHash: hash,
+			Status:       mdb.AdminUserStatusEnable,
+		}
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		if err := initAdminPasswordStateTx(tx, password); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	}); err != nil {
 		return "", false, err
 	}
-	var count int64
-	if err := dao.Mdb.Model(&mdb.AdminUser{}).Count(&count).Error; err != nil {
-		return "", false, err
+	if created {
+		cacheInitialAdminPasswordState(password)
 	}
-	if count > 0 {
-		return "", false, nil
-	}
-	password = randomAdminPassword()
-	hash, err := HashPassword(password)
-	if err != nil {
-		return "", false, err
-	}
-	user := &mdb.AdminUser{
-		Username:     defaultAdminUsername,
-		PasswordHash: hash,
-		Status:       mdb.AdminUserStatusEnable,
-	}
-	if err := dao.Mdb.Create(user).Error; err != nil {
-		return "", false, err
-	}
-	if err := initAdminPasswordState(password); err != nil {
-		// Account was already created; surface both for visibility while
-		// preserving created=true and password for emergency fallback.
-		return password, true, err
-	}
-	return password, true, nil
+	return password, created, nil
 }
 
-func purgeDeletedInitialAdminPasswordPlain() error {
-	return dao.Mdb.Unscoped().
+func purgeDeletedInitialAdminPasswordPlainTx(tx *gorm.DB) error {
+	return tx.Unscoped().
 		Where("`key` = ? AND deleted_at IS NOT NULL", mdb.SettingKeyInitAdminPasswordPlain).
 		Delete(&mdb.Setting{}).Error
 }
@@ -91,12 +99,20 @@ func HashInitialAdminPassword(plain string) string {
 }
 
 func initAdminPasswordState(plain string) error {
+	if err := initAdminPasswordStateTx(dao.Mdb, plain); err != nil {
+		return err
+	}
+	cacheInitialAdminPasswordState(plain)
+	return nil
+}
+
+func initAdminPasswordStateTx(tx *gorm.DB, plain string) error {
 	hash := HashInitialAdminPassword(plain)
 	settings := []mdb.Setting{
 		{
 			Group: mdb.SettingGroupSystem, Key: mdb.SettingKeyInitAdminPasswordPlain,
 			Value: plain, Type: mdb.SettingTypeString,
-			Description: "One-time readable initial admin password",
+			Description: "Readable initial admin password until password change",
 		},
 		{
 			Group: mdb.SettingGroupSystem, Key: mdb.SettingKeyInitAdminPasswordHash,
@@ -106,7 +122,7 @@ func initAdminPasswordState(plain string) error {
 		{
 			Group: mdb.SettingGroupSystem, Key: mdb.SettingKeyInitAdminPasswordFetched,
 			Value: "false", Type: mdb.SettingTypeBool,
-			Description: "Whether initial admin password has been fetched",
+			Description: "Whether initial admin password plaintext has been cleared",
 		},
 		{
 			Group: mdb.SettingGroupSystem, Key: mdb.SettingKeyInitAdminPasswordChanged,
@@ -115,18 +131,21 @@ func initAdminPasswordState(plain string) error {
 		},
 	}
 	for _, row := range settings {
-		if err := upsertSettingRow(dao.Mdb, row); err != nil {
+		if err := upsertSettingRow(tx, row); err != nil {
 			return err
 		}
 	}
-	// Keep in-process cache coherent for the current process.
+	return nil
+}
+
+func cacheInitialAdminPasswordState(plain string) {
+	hash := HashInitialAdminPassword(plain)
 	settingsCacheMu.Lock()
 	settingsCache[mdb.SettingKeyInitAdminPasswordPlain] = plain
 	settingsCache[mdb.SettingKeyInitAdminPasswordHash] = hash
 	settingsCache[mdb.SettingKeyInitAdminPasswordFetched] = "false"
 	settingsCache[mdb.SettingKeyInitAdminPasswordChanged] = "false"
 	settingsCacheMu.Unlock()
-	return nil
 }
 
 func upsertSettingRow(tx *gorm.DB, row mdb.Setting) error {
@@ -138,56 +157,51 @@ func upsertSettingRow(tx *gorm.DB, row mdb.Setting) error {
 	}).Create(&row).Error
 }
 
-// ConsumeInitialAdminPassword returns the one-time initial admin password.
-// After a successful read, the plaintext is deleted and cannot be fetched
-// again.
-func ConsumeInitialAdminPassword() (string, error) {
-	var password string
-	err := dao.Mdb.Transaction(func(tx *gorm.DB) error {
-		row := new(mdb.Setting)
-		if err := tx.Model(&mdb.Setting{}).
-			Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
-			Limit(1).
-			Find(row).Error; err != nil {
-			return err
-		}
-		if row.ID == 0 || row.Value == "" {
-			var fetched mdb.Setting
-			if err := tx.Model(&mdb.Setting{}).
-				Where("`key` = ?", mdb.SettingKeyInitAdminPasswordFetched).
-				Limit(1).
-				Find(&fetched).Error; err != nil {
-				return err
-			}
-			if strings.EqualFold(strings.TrimSpace(fetched.Value), "true") {
-				return ErrInitAdminPasswordAlreadyFetched
-			}
-			return ErrInitAdminPasswordUnavailable
-		}
-		password = row.Value
-		res := tx.Unscoped().Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).Delete(&mdb.Setting{})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return ErrInitAdminPasswordAlreadyFetched
-		}
-		return upsertSettingRow(tx, mdb.Setting{
-			Group:       mdb.SettingGroupSystem,
-			Key:         mdb.SettingKeyInitAdminPasswordFetched,
-			Value:       "true",
-			Type:        mdb.SettingTypeBool,
-			Description: "Whether initial admin password has been fetched",
-		})
-	})
-	if err != nil {
+// GetInitialAdminPassword returns the initial admin password plaintext while
+// it is still available. The plaintext remains readable until the admin
+// password is changed, after which the stored plaintext is deleted.
+func GetInitialAdminPassword() (string, error) {
+	row := new(mdb.Setting)
+	if err := dao.Mdb.Model(&mdb.Setting{}).
+		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
+		Limit(1).
+		Find(row).Error; err != nil {
 		return "", err
 	}
-	settingsCacheMu.Lock()
-	delete(settingsCache, mdb.SettingKeyInitAdminPasswordPlain)
-	settingsCache[mdb.SettingKeyInitAdminPasswordFetched] = "true"
-	settingsCacheMu.Unlock()
-	return password, nil
+	if row.ID != 0 && row.Value != "" {
+		return row.Value, nil
+	}
+
+	var fetched mdb.Setting
+	if err := dao.Mdb.Model(&mdb.Setting{}).
+		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordFetched).
+		Limit(1).
+		Find(&fetched).Error; err != nil {
+		return "", err
+	}
+	if strings.EqualFold(strings.TrimSpace(fetched.Value), "true") {
+		return "", ErrInitAdminPasswordAlreadyFetched
+	}
+	return "", ErrInitAdminPasswordUnavailable
+}
+
+func clearInitialAdminPasswordPlain(tx *gorm.DB) error {
+	res := tx.Unscoped().
+		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
+		Delete(&mdb.Setting{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if err := upsertSettingRow(tx, mdb.Setting{
+		Group:       mdb.SettingGroupSystem,
+		Key:         mdb.SettingKeyInitAdminPasswordFetched,
+		Value:       "true",
+		Type:        mdb.SettingTypeBool,
+		Description: "Whether initial admin password plaintext has been cleared",
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetInitialAdminPasswordHashInfo returns the initial-password fingerprint
@@ -250,12 +264,15 @@ func GetAdminUserByID(id uint64) (*mdb.AdminUser, error) {
 	return u, err
 }
 
-// UpdateAdminUserPassword rehashes and persists a new password.
+// UpdateAdminUserPassword rehashes and persists a new password. When the
+// change succeeds, the stored initial-password plaintext is deleted so it can
+// no longer be returned by the install flow.
 func UpdateAdminUserPassword(id uint64, newPlain string) error {
 	hash, err := HashPassword(newPlain)
 	if err != nil {
 		return err
 	}
+	clearedPlaintext := false
 	changedCacheValue := ""
 	err = dao.Mdb.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&mdb.AdminUser{}).
@@ -264,8 +281,18 @@ func UpdateAdminUserPassword(id uint64, newPlain string) error {
 			return err
 		}
 
+		var plainRow mdb.Setting
+		if err := tx.Model(&mdb.Setting{}).
+			Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
+			Limit(1).
+			Find(&plainRow).Error; err != nil {
+			return err
+		}
+		hasPlaintext := plainRow.ID != 0 && strings.TrimSpace(plainRow.Value) != ""
+
 		// Old installs may not have initial-password metadata; skip in
-		// that case to keep password updates backward compatible.
+		// that case to keep password_changed backward compatible, but still
+		// clear any leftover plaintext if it exists.
 		var initHashRow mdb.Setting
 		if err := tx.Model(&mdb.Setting{}).
 			Where("`key` = ?", mdb.SettingKeyInitAdminPasswordHash).
@@ -275,6 +302,12 @@ func UpdateAdminUserPassword(id uint64, newPlain string) error {
 		}
 		initHash := strings.TrimSpace(initHashRow.Value)
 		if initHash == "" {
+			if hasPlaintext {
+				if err := clearInitialAdminPasswordPlain(tx); err != nil {
+					return err
+				}
+				clearedPlaintext = true
+			}
 			return nil
 		}
 
@@ -293,15 +326,25 @@ func UpdateAdminUserPassword(id uint64, newPlain string) error {
 		}); err != nil {
 			return err
 		}
+		if err := clearInitialAdminPasswordPlain(tx); err != nil {
+			return err
+		}
+		clearedPlaintext = true
 		changedCacheValue = changedValue
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if changedCacheValue != "" {
+	if clearedPlaintext || changedCacheValue != "" {
 		settingsCacheMu.Lock()
-		settingsCache[mdb.SettingKeyInitAdminPasswordChanged] = changedCacheValue
+		if clearedPlaintext {
+			delete(settingsCache, mdb.SettingKeyInitAdminPasswordPlain)
+			settingsCache[mdb.SettingKeyInitAdminPasswordFetched] = "true"
+		}
+		if changedCacheValue != "" {
+			settingsCache[mdb.SettingKeyInitAdminPasswordChanged] = changedCacheValue
+		}
 		settingsCacheMu.Unlock()
 	}
 	return nil

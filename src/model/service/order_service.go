@@ -116,6 +116,10 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 	if strings.EqualFold(req.PaymentType, mdb.PaymentTypeEpay) {
 		paymentType = mdb.PaymentTypeEpay
 	}
+	epayType := ""
+	if paymentType == mdb.PaymentTypeEpay {
+		epayType = strings.TrimSpace(req.EpayType)
+	}
 
 	gCreateTransactionLock.Lock()
 	defer gCreateTransactionLock.Unlock()
@@ -146,6 +150,7 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 			NotifyUrl:   notifyURL,
 			RedirectUrl: req.RedirectUrl,
 			Name:        req.Name,
+			EpayType:    epayType,
 			PaymentType: paymentType,
 			PayProvider: mdb.PaymentProviderOnChain,
 			ApiKeyID:    apiKeyID(apiKey),
@@ -205,6 +210,7 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 		NotifyUrl:      notifyURL,
 		RedirectUrl:    req.RedirectUrl,
 		Name:           req.Name,
+		EpayType:       epayType,
 		PaymentType:    paymentType,
 		PayProvider:    mdb.PaymentProviderOnChain,
 		ApiKeyID:       apiKeyID(apiKey),
@@ -637,6 +643,7 @@ func SwitchNetwork(req *request.SwitchNetworkRequest) (*response.CheckoutCounter
 		NotifyUrl:       "",
 		RedirectUrl:     parent.RedirectUrl,
 		Name:            parent.Name,
+		EpayType:        parent.EpayType,
 		CallBackConfirm: mdb.CallBackConfirmOk, // don't trigger callback on sub-order
 		PaymentType:     parent.PaymentType,
 		PayProvider:     mdb.PaymentProviderOnChain,
@@ -916,6 +923,7 @@ func switchToOkPay(parent *mdb.Orders, token string) (*response.CheckoutCounterR
 		NotifyUrl:       "",
 		RedirectUrl:     parent.RedirectUrl,
 		Name:            parent.Name,
+		EpayType:        parent.EpayType,
 		CallBackConfirm: mdb.CallBackConfirmOk,
 		PaymentType:     parent.PaymentType,
 		PayProvider:     mdb.PaymentProviderOkPay,

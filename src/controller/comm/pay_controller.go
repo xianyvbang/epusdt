@@ -14,7 +14,7 @@ import (
 // CheckoutCounter 收银台
 // @Summary      Checkout counter page
 // @Description  Return checkout initialization data when the order exists. This endpoint only confirms order existence and returns base order data; call /pay/check-status/{trade_id} for the current order status (1=waiting payment, 2=paid, 3=expired, 4=waiting token/network selection).
-// @Description  When status=4, actual_amount is 0 and token/network/receive_address are empty; this state is produced by GMPay placeholders or EPay submit.php when no token/network request values or database defaults exist. The cashier should guide the payer to choose an on-chain token/network or OkPay and then call /pay/switch-network.
+// @Description  When status=4, actual_amount is 0 and token/network/receive_address are empty; this state is produced by GMPay placeholders or EPay submit.php when no token/network request values or defaults resolve to a concrete payment asset. The cashier should guide the payer to choose an on-chain token/network or OkPay and then call /pay/switch-network.
 // @Description  For EPay orders with a merchant return_url, the response redirect_url is rewritten to the internal /pay/return/{trade_id} hop; the database still stores the merchant's raw return_url.
 // @Tags         Payment
 // @Produce      json
@@ -36,6 +36,7 @@ func (c *BaseCommController) CheckoutCounter(ctx echo.Context) (err error) {
 // Non-EPay or not-yet-paid orders are sent back to the checkout counter.
 // @Summary      Return to merchant (EPAY compat)
 // @Description  Browser-facing success return hop for EPay orders. Paid EPay orders are redirected to the merchant return_url with signed legacy EPay query params. Orders that are not EPay or not yet paid are redirected back to the checkout counter.
+// @Description  The signed query params reuse the stored request type. On this branch that means either alipay or a supported token.network selector; if the original request omitted type, type=alipay is returned for compatibility.
 // @Description  This route also returns explicit business errors when the merchant return_url is missing, the order API key is unavailable, or EPay signature construction fails.
 // @Tags         Payment
 // @Produce      html

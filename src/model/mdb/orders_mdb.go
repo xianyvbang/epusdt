@@ -51,6 +51,7 @@ type Orders struct {
 	NotifyUrl   string `gorm:"column:notify_url" json:"notify_url" example:"https://example.com/notify"`
 	RedirectUrl string `gorm:"column:redirect_url" json:"redirect_url" example:"https://example.com/success"`
 	Name        string `gorm:"column:name" json:"name" example:"VIP月卡"`
+	EpayType    string `gorm:"column:epay_type;size:64;default:''" json:"-"`
 	CallbackNum int    `gorm:"column:callback_num;default:0" json:"callback_num" example:"0"`
 	// 回调确认状态 1=回调成功 2=未回调/回调失败
 	CallBackConfirm int  `gorm:"column:callback_confirm;default:2" json:"callback_confirm" enums:"1,2" example:"2"`

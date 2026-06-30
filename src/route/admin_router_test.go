@@ -290,9 +290,9 @@ func TestAdminChangePassword(t *testing.T) {
 	}
 }
 
-// TestAdminInitPasswordFlow verifies the one-time initial password endpoint
-// and hash-based "password changed" detection flow.
-func TestAdminInitPasswordFlow(t *testing.T) {
+// TestAdminInitialPasswordMetadataFlow verifies that the public plaintext route
+// is gone while the hash-based default-password detection flow still works.
+func TestAdminInitialPasswordMetadataFlow(t *testing.T) {
 	e := setupTestEnv(t)
 	const initPassword = "init-pass-123456"
 
@@ -320,14 +320,11 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 		t.Fatalf("expected password_changed=false before change, got true")
 	}
 
-	recFetch := doGet(e, "/admin/api/v1/auth/init-password")
-	respFetch := assertOK(t, recFetch)
-	fetchData, _ := respFetch["data"].(map[string]interface{})
-	if fetchData["username"] != testAdminUsername {
-		t.Fatalf("expected username=%s, got %v", testAdminUsername, fetchData["username"])
-	}
-	if fetchData["password"] != initPassword {
-		t.Fatalf("expected initial password %s, got %v", initPassword, fetchData["password"])
+	token := adminLogin(t, e, testAdminUsername, initPassword)
+
+	recFetch := doGetAdmin(e, "/admin/api/v1/auth/init-password", token)
+	if recFetch.Code != http.StatusNotFound {
+		t.Fatalf("expected removed init-password route to return 404, got %d body=%s", recFetch.Code, recFetch.Body.String())
 	}
 	var plaintextRows int64
 	if err := dao.Mdb.Unscoped().
@@ -336,26 +333,9 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 		Count(&plaintextRows).Error; err != nil {
 		t.Fatalf("count init password plaintext rows: %v", err)
 	}
-	if plaintextRows != 0 {
-		t.Fatalf("expected init password plaintext to be hard-deleted, got %d rows", plaintextRows)
+	if plaintextRows != 1 {
+		t.Fatalf("expected init password plaintext to remain available, got %d rows", plaintextRows)
 	}
-
-	recFetch2 := doGet(e, "/admin/api/v1/auth/init-password")
-	if recFetch2.Code != http.StatusBadRequest {
-		t.Fatalf("second fetch should fail with 400, got %d body=%s", recFetch2.Code, recFetch2.Body.String())
-	}
-	var respFetch2 map[string]interface{}
-	if err := json.Unmarshal(recFetch2.Body.Bytes(), &respFetch2); err != nil {
-		t.Fatalf("unmarshal second fetch response: %v", err)
-	}
-	if got := int(respFetch2["status_code"].(float64)); got != 10040 {
-		t.Fatalf("second fetch status_code = %d, want 10040; response=%v", got, respFetch2)
-	}
-	if got, _ := respFetch2["message"].(string); got != constant.Errno[10040] {
-		t.Fatalf("second fetch message = %q, want %q; response=%v", got, constant.Errno[10040], respFetch2)
-	}
-
-	token := adminLogin(t, e, testAdminUsername, initPassword)
 
 	recMe1 := doGetAdmin(e, "/admin/api/v1/auth/me", token)
 	respMe1 := assertOK(t, recMe1)
@@ -375,6 +355,15 @@ func TestAdminInitPasswordFlow(t *testing.T) {
 	hashData2, _ := respHash2["data"].(map[string]interface{})
 	if got, _ := hashData2["password_changed"].(bool); !got {
 		t.Fatalf("expected password_changed=true after change, got %v", got)
+	}
+	if err := dao.Mdb.Unscoped().
+		Model(&mdb.Setting{}).
+		Where("`key` = ?", mdb.SettingKeyInitAdminPasswordPlain).
+		Count(&plaintextRows).Error; err != nil {
+		t.Fatalf("count init password plaintext rows after change: %v", err)
+	}
+	if plaintextRows != 0 {
+		t.Fatalf("expected init password plaintext to be hard-deleted after change, got %d rows", plaintextRows)
 	}
 
 	recMe2 := doGetAdmin(e, "/admin/api/v1/auth/me", token)

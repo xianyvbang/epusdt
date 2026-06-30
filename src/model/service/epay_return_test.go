@@ -40,12 +40,13 @@ func TestBuildPublicRedirectURLRewritesOnlyEpayOrders(t *testing.T) {
 	}
 }
 
-func TestBuildEPayResultParamsMatchesLegacyFields(t *testing.T) {
+func TestBuildEPayResultParamsUsesOriginalType(t *testing.T) {
 	params, err := BuildEPayResultParams(&mdb.Orders{
-		TradeId: "trade_epay_params",
-		OrderId: "order_epay_params",
-		Name:    "VIP",
-		Amount:  1,
+		TradeId:  "trade_epay_params",
+		OrderId:  "order_epay_params",
+		Name:     "VIP",
+		Amount:   1,
+		EpayType: "usdt.tron",
 	}, &mdb.ApiKey{
 		Pid:       "1001",
 		SecretKey: "epay-secret",
@@ -58,7 +59,7 @@ func TestBuildEPayResultParamsMatchesLegacyFields(t *testing.T) {
 		"pid":          "1001",
 		"trade_no":     "trade_epay_params",
 		"out_trade_no": "order_epay_params",
-		"type":         "alipay",
+		"type":         "usdt.tron",
 		"name":         "VIP",
 		"money":        "1.0000",
 		"trade_status": "TRADE_SUCCESS",
@@ -85,6 +86,24 @@ func TestBuildEPayResultParamsMatchesLegacyFields(t *testing.T) {
 	}
 	if got := params["sign"]; got != wantSign {
 		t.Fatalf("sign = %q, want %q", got, wantSign)
+	}
+}
+
+func TestBuildEPayResultParamsFallsBackToAlipayWhenTypeMissing(t *testing.T) {
+	params, err := BuildEPayResultParams(&mdb.Orders{
+		TradeId: "trade_epay_fallback",
+		OrderId: "order_epay_fallback",
+		Name:    "VIP",
+		Amount:  1,
+	}, &mdb.ApiKey{
+		Pid:       "1001",
+		SecretKey: "epay-secret",
+	})
+	if err != nil {
+		t.Fatalf("BuildEPayResultParams(): %v", err)
+	}
+	if got := params["type"]; got != "alipay" {
+		t.Fatalf("type = %q, want alipay", got)
 	}
 }
 

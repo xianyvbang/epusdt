@@ -7,9 +7,9 @@ type NetworkTokenSupport struct {
 }
 
 type EpayPublicConfig struct {
-	DefaultToken    string `json:"default_token" example:""`       // EPay default token; empty means submit.php can create a status=4 placeholder when request token/network are also absent.
-	DefaultCurrency string `json:"default_currency" example:"cny"` // EPay default fiat currency; falls back to cny when unset.
-	DefaultNetwork  string `json:"default_network" example:""`     // EPay default network; empty means submit.php can create a status=4 placeholder when request token/network are also absent.
+	DefaultToken    string `json:"default_token" example:""`       // EPay default token; ignored when a supported type=token.network selector is supplied. Empty means submit.php can create a status=4 placeholder when request token/network are also absent.
+	DefaultCurrency string `json:"default_currency" example:"cny"` // EPay default fiat currency; still applies when a supported type selector is supplied and falls back to cny when unset.
+	DefaultNetwork  string `json:"default_network" example:""`     // EPay default network; ignored when a supported type=token.network selector is supplied. Empty means submit.php can create a status=4 placeholder when request token/network are also absent.
 }
 
 type SitePublicConfig struct {

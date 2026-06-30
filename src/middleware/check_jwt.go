@@ -27,6 +27,9 @@ const (
 func CheckAdminJWT() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(ctx echo.Context) error {
+			if ctx.Path() == "" {
+				return next(ctx)
+			}
 			token, err := adminTokenFromAuthorization(ctx.Request().Header.Get("Authorization"))
 			if err != nil {
 				return err

@@ -573,6 +573,7 @@ func TestSendOrderCallbackEpayUsesApiKeySecretByPid(t *testing.T) {
 		Status:             mdb.StatusPaySuccess,
 		NotifyUrl:          server.URL,
 		BlockTransactionId: "block_epay_sign",
+		EpayType:           "usdt.tron",
 		PaymentType:        "epay",
 		ApiKeyID:           key.ID,
 	}
@@ -587,8 +588,8 @@ func TestSendOrderCallbackEpayUsesApiKeySecretByPid(t *testing.T) {
 	if formPayload["sign_type"] != "MD5" {
 		t.Fatalf("sign_type = %q, want MD5", formPayload["sign_type"])
 	}
-	if formPayload["type"] != "alipay" {
-		t.Fatalf("type = %q, want alipay", formPayload["type"])
+	if formPayload["type"] != "usdt.tron" {
+		t.Fatalf("type = %q, want usdt.tron", formPayload["type"])
 	}
 	if formPayload["trade_status"] != "TRADE_SUCCESS" {
 		t.Fatalf("trade_status = %q, want TRADE_SUCCESS", formPayload["trade_status"])
@@ -626,6 +627,77 @@ func TestSendOrderCallbackEpayUsesApiKeySecretByPid(t *testing.T) {
 	}
 	if recvSig == wrongSig {
 		t.Fatal("epay signature should not match wrong api key secret")
+	}
+}
+
+func TestSendOrderCallbackEpayPreservesStoredAlipayType(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	key := &mdb.ApiKey{
+		Name:      "epay-key-stored-type",
+		Pid:       "9201",
+		SecretKey: "epay-secret-9201",
+		Status:    mdb.ApiKeyStatusEnable,
+	}
+	if err := dao.Mdb.Create(key).Error; err != nil {
+		t.Fatalf("create epay api key: %v", err)
+	}
+
+	formPayload := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for k, v := range r.Form {
+			if len(v) > 0 {
+				formPayload[k] = v[0]
+			}
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	order := &mdb.Orders{
+		TradeId:            "trade_epay_type_case_alipay",
+		OrderId:            "order_epay_type_case_alipay",
+		Amount:             1,
+		Currency:           "CNY",
+		ActualAmount:       1,
+		ReceiveAddress:     "wallet_epay_type_case",
+		Token:              "USDT",
+		Name:               "VIP",
+		Status:             mdb.StatusPaySuccess,
+		NotifyUrl:          server.URL,
+		BlockTransactionId: "block_epay_type_case_alipay",
+		EpayType:           "alipay",
+		PaymentType:        "epay",
+		ApiKeyID:           key.ID,
+	}
+
+	if err := sendOrderCallback(order); err != nil {
+		t.Fatalf("send epay callback: %v", err)
+	}
+	if got := formPayload["type"]; got != "alipay" {
+		t.Fatalf("type = %q, want alipay", got)
+	}
+
+	signParams := map[string]interface{}{
+		"pid":          formPayload["pid"],
+		"trade_no":     formPayload["trade_no"],
+		"out_trade_no": formPayload["out_trade_no"],
+		"type":         formPayload["type"],
+		"name":         formPayload["name"],
+		"money":        formPayload["money"],
+		"trade_status": formPayload["trade_status"],
+	}
+	calcSig, err := sign.Get(signParams, key.SecretKey)
+	if err != nil {
+		t.Fatalf("calc epay signature: %v", err)
+	}
+	if got := formPayload["sign"]; got != calcSig {
+		t.Fatalf("sign = %q, want %q", got, calcSig)
 	}
 }
 

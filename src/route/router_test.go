@@ -1272,6 +1272,9 @@ func TestEpaySubmitPhpGetCompatible(t *testing.T) {
 	if order.PaymentType != mdb.PaymentTypeEpay {
 		t.Fatalf("epay payment_type = %q, want %q", order.PaymentType, mdb.PaymentTypeEpay)
 	}
+	if order.EpayType != "alipay" {
+		t.Fatalf("epay_type = %q, want alipay", order.EpayType)
+	}
 	checkoutData := getCheckoutCounterRespData(t, e, tradeID)
 	if checkoutData["payment_type"] != "epay" {
 		t.Fatalf("epay checkout payment_type = %v, want epay", checkoutData["payment_type"])
@@ -1327,6 +1330,100 @@ func TestEpaySubmitPhpRequestTokenNetworkOverrideDefaults(t *testing.T) {
 	}
 }
 
+func TestEpaySubmitPhpTypeSelectorOverridesRequestAndDefaults(t *testing.T) {
+	e := setupTestEnv(t)
+
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultToken, "usdc", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_token: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultNetwork, "solana", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_network: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultCurrency, "", mdb.SettingTypeString); err != nil {
+		t.Fatalf("clear epay.default_currency: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-type-selector-001"},
+		"type":         {"usdt.tron"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-type-selector-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+		"token":        {"usdc"},
+		"network":      {"solana"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/payments/epay/v1/order/create-transaction/submit.php?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	tradeID := strings.TrimPrefix(rec.Header().Get("Location"), "/pay/checkout-counter/")
+	order, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload epay selector order: %v", err)
+	}
+	if order.Token != "USDT" || order.Network != mdb.NetworkTron || order.ReceiveAddress != "TTestTronAddress001" {
+		t.Fatalf("selector order fields = token %q network %q address %q", order.Token, order.Network, order.ReceiveAddress)
+	}
+	if order.Currency != "CNY" {
+		t.Fatalf("currency = %q, want CNY", order.Currency)
+	}
+	if order.EpayType != "usdt.tron" {
+		t.Fatalf("epay_type = %q, want usdt.tron", order.EpayType)
+	}
+}
+
+func TestEpaySubmitPhpTypeSelectorUsesDefaultCurrencyWhenMissing(t *testing.T) {
+	e := setupTestEnv(t)
+
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultToken, "usdc", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_token: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultNetwork, "solana", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_network: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultCurrency, "usd", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_currency: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupRate, "rate.forced_rate_list", `{"cny":{"usdt":0.14285714285714285},"usd":{"usdt":1}}`, mdb.SettingTypeJSON); err != nil {
+		t.Fatalf("seed rate.forced_rate_list for usd: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-type-default-cur-001"},
+		"type":         {"usdt.tron"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-type-default-cur-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+		"token":        {"usdc"},
+		"network":      {"solana"},
+	})
+
+	rec := doFormPost(e, "/payments/epay/v1/order/create-transaction/submit.php", values)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	tradeID := strings.TrimPrefix(rec.Header().Get("Location"), "/pay/checkout-counter/")
+	order, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload epay selector order: %v", err)
+	}
+	if order.Token != "USDT" || order.Network != mdb.NetworkTron || order.ReceiveAddress != "TTestTronAddress001" {
+		t.Fatalf("selector order fields = token %q network %q address %q", order.Token, order.Network, order.ReceiveAddress)
+	}
+	if order.Currency != "USD" {
+		t.Fatalf("currency = %q, want USD", order.Currency)
+	}
+}
+
 func TestEpaySubmitPhpWithoutTokenNetworkDefaultsCreatesPlaceholder(t *testing.T) {
 	e := setupTestEnv(t)
 
@@ -1365,9 +1462,117 @@ func TestEpaySubmitPhpWithoutTokenNetworkDefaultsCreatesPlaceholder(t *testing.T
 	if order.PaymentType != mdb.PaymentTypeEpay {
 		t.Fatalf("payment_type = %q, want %q", order.PaymentType, mdb.PaymentTypeEpay)
 	}
+	if order.EpayType != "alipay" {
+		t.Fatalf("epay_type = %q, want alipay", order.EpayType)
+	}
 	checkoutData := getCheckoutCounterRespData(t, e, tradeID)
 	if checkoutData["payment_type"] != "epay" || int(checkoutData["status"].(float64)) != mdb.StatusWaitSelect {
 		t.Fatalf("checkout placeholder data = %#v", checkoutData)
+	}
+}
+
+func TestEpaySubmitPhpWithoutTypeKeepsCurrentBehavior(t *testing.T) {
+	e := setupTestEnv(t)
+
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultToken, "usdt", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_token: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultNetwork, "tron", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_network: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-empty-type-001"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-empty-type-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/payments/epay/v1/order/create-transaction/submit.php?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	tradeID := strings.TrimPrefix(rec.Header().Get("Location"), "/pay/checkout-counter/")
+	order, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload epay empty-type order: %v", err)
+	}
+	if order.Token != "USDT" || order.Network != mdb.NetworkTron || order.ReceiveAddress != "TTestTronAddress001" {
+		t.Fatalf("empty-type order fields = token %q network %q address %q", order.Token, order.Network, order.ReceiveAddress)
+	}
+	if order.EpayType != "" {
+		t.Fatalf("epay_type = %q, want empty", order.EpayType)
+	}
+}
+
+func TestEpaySubmitPhpRejectsNonSelectorType(t *testing.T) {
+	e := setupTestEnv(t)
+
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultToken, "usdt", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_token: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultNetwork, "tron", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_network: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-non-selector-001"},
+		"type":         {"usdt-tron"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-non-selector-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/payments/epay/v1/order/create-transaction/submit.php?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := parseResp(t, rec)
+	if got := int(resp["status_code"].(float64)); got != 10009 {
+		t.Fatalf("status_code = %d, want 10009", got)
+	}
+}
+
+func TestEpaySubmitPhpRejectsUnsupportedSelectorType(t *testing.T) {
+	e := setupTestEnv(t)
+
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultToken, "usdt", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_token: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultNetwork, "tron", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_network: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-unsupported-selector-001"},
+		"type":         {"usdc.tron"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-unsupported-selector-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/payments/epay/v1/order/create-transaction/submit.php?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := parseResp(t, rec)
+	if got := int(resp["status_code"].(float64)); got != 10009 {
+		t.Fatalf("status_code = %d, want 10009", got)
 	}
 }
 
@@ -1425,6 +1630,40 @@ func TestEpaySubmitPhpPostFormCompatible(t *testing.T) {
 	}
 	if !strings.HasPrefix(rec.Header().Get("Location"), "/pay/checkout-counter/") {
 		t.Fatalf("expected checkout redirect, got %q", rec.Header().Get("Location"))
+	}
+}
+
+func TestEpaySubmitPhpTypeSelectorPostFormCompatible(t *testing.T) {
+	e := setupTestEnv(t)
+
+	if err := data.SetSetting(mdb.SettingGroupEpay, mdb.SettingKeyEpayDefaultNetwork, "solana", mdb.SettingTypeString); err != nil {
+		t.Fatalf("seed epay.default_network: %v", err)
+	}
+
+	values := signEpayValues(url.Values{
+		"pid":          {"1"},
+		"name":         {"epay-post-selector-001"},
+		"type":         {"usdt.tron"},
+		"money":        {"1.00"},
+		"out_trade_no": {"epay-post-selector-001"},
+		"notify_url":   {"https://93.184.216.34/notify"},
+		"return_url":   {"http://localhost/return"},
+	})
+
+	rec := doFormPost(e, "/payments/epay/v1/order/create-transaction/submit.php", values)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	tradeID := strings.TrimPrefix(rec.Header().Get("Location"), "/pay/checkout-counter/")
+	order, err := data.GetOrderInfoByTradeId(tradeID)
+	if err != nil {
+		t.Fatalf("reload epay post selector order: %v", err)
+	}
+	if order.Token != "USDT" || order.Network != mdb.NetworkTron || order.ReceiveAddress != "TTestTronAddress001" {
+		t.Fatalf("post selector order fields = token %q network %q address %q", order.Token, order.Network, order.ReceiveAddress)
+	}
+	if order.EpayType != "usdt.tron" {
+		t.Fatalf("epay_type = %q, want usdt.tron", order.EpayType)
 	}
 }
 
@@ -1653,6 +1892,33 @@ func TestPayReturn_PaidEpayRedirectsToMerchantWithSignedParams(t *testing.T) {
 	}
 	if got := query.Get("sign"); got != calcSig {
 		t.Fatalf("sign = %q, want %q", got, calcSig)
+	}
+}
+
+func TestPayReturn_PaidEpayRedirectsWithOriginalType(t *testing.T) {
+	e := setupTestEnv(t)
+	tradeID := mustCreateEPayOrder(t, e, "epay-return-type-001", "https://merchant.example/return", url.Values{
+		"type": {"usdt.tron"},
+	})
+	if err := dao.Mdb.Model(&mdb.Orders{}).
+		Where("trade_id = ?", tradeID).
+		Update("status", mdb.StatusPaySuccess).Error; err != nil {
+		t.Fatalf("mark order paid: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/pay/return/"+tradeID, nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	targetURL, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect location: %v", err)
+	}
+	if got := targetURL.Query().Get("type"); got != "usdt.tron" {
+		t.Fatalf("type = %q, want usdt.tron", got)
 	}
 }
 
@@ -2501,6 +2767,9 @@ func TestSwitchNetwork_EpayPlaceholderCompletesChainInPlace(t *testing.T) {
 	if parent.Status != mdb.StatusWaitPay || parent.PaymentType != mdb.PaymentTypeEpay || parent.Network != mdb.NetworkTron || parent.Token != "USDT" || parent.ReceiveAddress == "" {
 		t.Fatalf("parent fields = status %d payment_type %q network %q token %q address %q", parent.Status, parent.PaymentType, parent.Network, parent.Token, parent.ReceiveAddress)
 	}
+	if parent.EpayType != "alipay" {
+		t.Fatalf("parent epay_type = %q, want alipay", parent.EpayType)
+	}
 	if parent.RedirectUrl != "http://localhost/return" {
 		t.Fatalf("stored redirect_url = %q, want merchant raw return_url", parent.RedirectUrl)
 	}
@@ -2613,6 +2882,47 @@ func TestSwitchNetwork_OkPayFromEpayWaitSelectPlaceholder(t *testing.T) {
 	}
 	if providerRow.ProviderOrderID != "okp-epay-placeholder-1" {
 		t.Fatalf("provider_order_id = %q", providerRow.ProviderOrderID)
+	}
+}
+
+func TestSwitchNetwork_EpayChildInheritsOriginalType(t *testing.T) {
+	e := setupTestEnv(t)
+	tradeID := mustCreateEPayOrder(t, e, "epay-switch-child-type-001", "http://localhost/return", url.Values{
+		"type": {"usdt.tron"},
+	})
+
+	rec := doPost(e, "/pay/switch-network", map[string]interface{}{
+		"trade_id": tradeID,
+		"token":    "USDT",
+		"network":  "solana",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("switch epay parent to solana failed: %d %s", rec.Code, rec.Body.String())
+	}
+	resp := parseResp(t, rec)
+	respData, _ := resp["data"].(map[string]interface{})
+	subTradeID, _ := respData["trade_id"].(string)
+	if subTradeID == "" || subTradeID == tradeID {
+		t.Fatalf("expected child trade_id, got %q", subTradeID)
+	}
+
+	subOrder, err := data.GetOrderInfoByTradeId(subTradeID)
+	if err != nil {
+		t.Fatalf("load sub-order: %v", err)
+	}
+	if subOrder.EpayType != "usdt.tron" {
+		t.Fatalf("sub-order epay_type = %q, want usdt.tron", subOrder.EpayType)
+	}
+	apiKeyRow, err := data.GetApiKeyByID(subOrder.ApiKeyID)
+	if err != nil {
+		t.Fatalf("load api key: %v", err)
+	}
+	params, err := service.BuildEPayResultParams(subOrder, apiKeyRow)
+	if err != nil {
+		t.Fatalf("BuildEPayResultParams(): %v", err)
+	}
+	if params["type"] != "usdt.tron" {
+		t.Fatalf("callback type = %q, want usdt.tron", params["type"])
 	}
 }
 

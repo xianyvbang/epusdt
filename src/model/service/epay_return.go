@@ -71,6 +71,16 @@ func ResolveOrderApiKey(order *mdb.Orders) (*mdb.ApiKey, error) {
 	return row, nil
 }
 
+func epayResultType(order *mdb.Orders) string {
+	if order == nil {
+		return "alipay"
+	}
+	if epayType := strings.TrimSpace(order.EpayType); epayType != "" {
+		return epayType
+	}
+	return "alipay"
+}
+
 func BuildEPayResultParams(order *mdb.Orders, apiKeyRow *mdb.ApiKey) (map[string]string, error) {
 	if order == nil || apiKeyRow == nil {
 		return nil, constant.EPayReturnSignatureErr
@@ -85,7 +95,7 @@ func BuildEPayResultParams(order *mdb.Orders, apiKeyRow *mdb.ApiKey) (map[string
 		PID:         pidInt,
 		TradeNo:     order.TradeId,
 		OutTradeNo:  order.OrderId,
-		Type:        "alipay",
+		Type:        epayResultType(order),
 		Name:        order.Name,
 		Money:       fmt.Sprintf("%.4f", order.Amount),
 		TradeStatus: "TRADE_SUCCESS",

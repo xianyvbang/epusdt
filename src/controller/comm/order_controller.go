@@ -3,6 +3,7 @@ package comm
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/GMWalletApp/epusdt/middleware"
 	"github.com/GMWalletApp/epusdt/model/mdb"
@@ -12,6 +13,8 @@ import (
 	"github.com/GMWalletApp/epusdt/util/log"
 	"github.com/labstack/echo/v4"
 )
+
+const EPayTypeContextKey = "epay_type"
 
 // apiKeyFromContext returns the api_keys row stamped by CheckApiSign.
 // Returns nil when the middleware didn't run (should not happen on authed routes).
@@ -101,7 +104,10 @@ func (c *BaseCommController) SwitchNetwork(ctx echo.Context) (err error) {
 // POST (form) per the legacy EPAY protocol; swagger documents POST as
 // the canonical form — the GET variant is identical save the transport.
 // @Summary      Create transaction and redirect (EPAY compat)
-// @Description  Legacy EPAY-style endpoint. Accepts GET (querystring) and POST (form). On success, 302 redirects to /pay/checkout-counter/{trade_id}. Signature uses MD5 of sorted params + secret_key of the api_keys row matching the submitted pid. Optional request token/network/currency override database defaults and must be included in the EPay signature when sent. The server injects internal payment_type=Epay after EPay signature verification; merchants do not send GMPay payment_type to this endpoint.
+// @Description  Legacy EPAY-style endpoint. Accepts GET (querystring) and POST (form). On success, 302 redirects to /pay/checkout-counter/{trade_id}. Signature uses MD5 of sorted params + secret_key of the api_keys row matching the submitted pid.
+// @Description  After signature verification, type accepts only either alipay or a supported type=token.network selector (for example usdt.tron). Token/network resolution is: supported selector first; otherwise request token/network; otherwise epay.default_token / epay.default_network. If token and network are still both empty, the order is created as status=4 placeholder. Supplying only one of token/network remains invalid.
+// @Description  Currency resolution is unchanged: request currency -> epay.default_currency -> cny. Supported type selectors bypass only token/network defaults, not currency fallback.
+// @Description  Success return/notify reuse the stored request type. On this branch that means either alipay or a supported token.network selector; when the request omitted type, outbound fallback remains alipay. The server injects internal payment_type=Epay after EPay signature verification; merchants do not send GMPay payment_type to this endpoint.
 // @Tags         Payment
 // @Accept       x-www-form-urlencoded
 // @Produce      html
@@ -111,7 +117,7 @@ func (c *BaseCommController) SwitchNetwork(ctx echo.Context) (err error) {
 // @Param        notify_url query string false "Callback URL (GET query)"
 // @Param        return_url query string false "Redirect URL after payment (GET query)"
 // @Param        name query string false "Order name (GET query)"
-// @Param        type query string false "Payment type (e.g. alipay, GET query)"
+// @Param        type query string false "Either alipay or a supported token.network selector such as usdt.tron (GET query)"
 // @Param        sign query string false "MD5 signature (GET query)"
 // @Param        sign_type query string false "Signature type (MD5, GET query)"
 // @Param        pid formData integer true "API key PID"
@@ -120,7 +126,7 @@ func (c *BaseCommController) SwitchNetwork(ctx echo.Context) (err error) {
 // @Param        notify_url formData string true "Callback URL"
 // @Param        return_url formData string false "Redirect URL after payment"
 // @Param        name formData string false "Order name"
-// @Param        type formData string false "Payment type (e.g. alipay)"
+// @Param        type formData string false "Either alipay or a supported token.network selector such as usdt.tron"
 // @Param        sign formData string true "MD5 signature"
 // @Param        sign_type formData string false "Signature type (MD5)"
 // @Success      302 "Redirect to checkout counter"
@@ -132,6 +138,9 @@ func (c *BaseCommController) CreateTransactionAndRedirect(ctx echo.Context) (err
 	if err = ctx.Bind(req); err != nil {
 		log.Sugar.Errorf("bind request error: %v", err)
 		return c.FailJson(ctx, constant.ParamsMarshalErr)
+	}
+	if raw, ok := ctx.Get(EPayTypeContextKey).(string); ok {
+		req.EpayType = strings.TrimSpace(raw)
 	}
 	if err = c.ValidateStruct(ctx, req); err != nil {
 		log.Sugar.Errorf("validate request error: %v", err)

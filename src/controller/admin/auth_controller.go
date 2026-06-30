@@ -1,8 +1,6 @@
 package admin
 
 import (
-	"errors"
-
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/util/constant"
@@ -33,12 +31,6 @@ type ChangePasswordRequest struct {
 type MeResponse struct {
 	mdb.AdminUser
 	PasswordIsDefault bool `json:"password_is_default" example:"true"`
-}
-
-// InitialPasswordResponse is returned by the one-time initial password API.
-type InitialPasswordResponse struct {
-	Username string `json:"username" example:"admin"`
-	Password string `json:"password" example:"a1b2c3d4e5f6"`
 }
 
 // Login verifies credentials, stamps last_login_at, returns a signed JWT.
@@ -81,28 +73,6 @@ func (c *BaseAdminController) Login(ctx echo.Context) error {
 		Token:    token,
 		Username: user.Username,
 		UserID:   user.ID,
-	})
-}
-
-// GetInitialPassword returns the one-time initial admin password.
-// @Summary      Get initial admin password (one-time)
-// @Description  Returns the initial random admin password once, then invalidates it.
-// @Tags         Admin Auth
-// @Produce      json
-// @Success      200 {object} response.ApiResponse{data=admin.InitialPasswordResponse}
-// @Failure      400 {object} response.ApiResponse
-// @Router       /admin/api/v1/auth/init-password [get]
-func (c *BaseAdminController) GetInitialPassword(ctx echo.Context) error {
-	password, err := data.ConsumeInitialAdminPassword()
-	if err != nil {
-		if errors.Is(err, data.ErrInitAdminPasswordAlreadyFetched) || errors.Is(err, data.ErrInitAdminPasswordUnavailable) {
-			return c.FailJson(ctx, constant.InitialAdminPasswordErr)
-		}
-		return c.FailJson(ctx, err)
-	}
-	return c.SucJson(ctx, InitialPasswordResponse{
-		Username: "admin",
-		Password: password,
 	})
 }
 

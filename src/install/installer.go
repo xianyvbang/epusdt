@@ -3,23 +3,25 @@
 // When the .env config file is absent (or has install=true) the HTTP start
 // command calls RunInstallServer, which listens on the same address the main
 // server will eventually use (default :8000) and mounts two JSON endpoints
-// under /install consumed by the frontend install UI:
+// consumed by the frontend install UI:
 //
-//	GET  /install/defaults  — default field values for the form
-//	POST /install           — validate + write .env, then shut down
+//	GET  /api/install/defaults  — default field values for the form
+//	POST /api/install           — validate + initialize install state, then shut down
 //
 // The HTTP listen address is submitted as two separate fields (http_bind_addr
 // and http_bind_port) and combined internally as "ADDR:PORT" before writing
 // the http_listen key in .env.  This makes the form easier for users who only
 // want to change the port without touching the bind address.
 //
-// Once the .env is written the install server stops and normal bootstrap
-// proceeds on the same port without a restart.
+// Once install state is initialized and the .env is finalized with
+// install=false, the install server stops and normal bootstrap proceeds on the
+// same port without a restart.
 package install
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,10 +30,15 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/config"
+	"github.com/GMWalletApp/epusdt/model/dao"
+	"github.com/GMWalletApp/epusdt/model/data"
 	luluHttp "github.com/GMWalletApp/epusdt/util/http"
+	appLog "github.com/GMWalletApp/epusdt/util/log"
 	"github.com/gookit/color"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"go.uber.org/zap"
 )
 
 // DefaultInstallAddr is the listen address used by the install API.
@@ -57,6 +64,14 @@ type InstallRequest struct {
 	OrderExpirationTime int `json:"order_expiration_time" form:"order_expiration_time" example:"10"`
 	// Maximum webhook retry attempts (default: 1)
 	OrderNoticeMaxRetry int `json:"order_notice_max_retry" form:"order_notice_max_retry" example:"1"`
+}
+
+// InstallSubmitResponse is returned when the install request succeeds.
+type InstallSubmitResponse struct {
+	// Completion message for the install request.
+	Message string `json:"message" example:"install complete, starting server…"`
+	// Initial admin password, returned only while the plaintext is still available.
+	InitPassword string `json:"init_password,omitempty" example:"a1b2c3d4e5f6"`
 }
 
 // InstallDefaults returns sensible default values for the install form.
@@ -149,28 +164,20 @@ func (h *installHandler) GetDefaults(c echo.Context) error {
 	return c.JSON(http.StatusOK, InstallDefaults())
 }
 
-// Submit validates the install payload, writes the .env file, and signals
-// the install server to shut down so the main bootstrap can proceed.
+// Submit validates the install payload, writes the .env file, initializes the
+// minimum DB/admin state, and signals the install server to shut down so the
+// main bootstrap can proceed.
 // http_bind_addr and http_bind_port are combined as "ADDR:PORT" to produce
 // the http_listen config key (e.g. 0.0.0.0:8000).
 //
 // @Summary      Install — submit configuration
-// @Description  Validates the submitted configuration and writes the .env file.
-//
-//	http_bind_addr + http_bind_port are joined internally as "ADDR:PORT" for
-//	the http_listen config key (defaults: 127.0.0.1 and 8000 respectively).
-//	http_bind_port must be in the range 1–65535 if provided.
-//	app_uri is required. All other fields are optional and fall back to
-//	the defaults returned by GET /api/install/defaults.
-//	Sets install=false in the written .env, then shuts down the install
-//	server so that normal application bootstrap starts on the same port.
-//	After installation completes this route is no longer served.
-//
+// @Description  Validates the submitted configuration, writes install=true, performs the minimum DB setup needed to ensure the default admin exists, optionally returns init_password, then rewrites install=false before shutting down the install server.
+// @Description  http_bind_addr + http_bind_port are joined internally as "ADDR:PORT" for http_listen. app_uri is required; other fields fall back to GET /api/install/defaults.
 // @Tags         Install
 // @Accept       json
 // @Produce      json
 // @Param        body body     InstallRequest true "Install configuration"
-// @Success      200  {object} map[string]string "message"
+// @Success      200  {object} InstallSubmitResponse
 // @Failure      400  {object} map[string]string "error"
 // @Failure      500  {object} map[string]string "error"
 // @Router       /api/install [post]
@@ -210,16 +217,26 @@ func (h *installHandler) Submit(c echo.Context) error {
 		req.OrderNoticeMaxRetry = d.OrderNoticeMaxRetry
 	}
 
-	if err := writeEnvFile(h.envFilePath, req); err != nil {
+	if err := writeEnvFile(h.envFilePath, req, true); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	initPassword, err := initializeInstallState(h.envFilePath)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+	}
+	if err := writeEnvFile(h.envFilePath, req, false); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
 
 	go func() { close(h.done) }()
-	return c.JSON(http.StatusOK, map[string]interface{}{"message": "install complete, starting server…"})
+	return c.JSON(http.StatusOK, InstallSubmitResponse{
+		Message:      "install complete, starting server…",
+		InitPassword: initPassword,
+	})
 }
 
-// RunInstallServer starts the install REST API on listenAddr (default :8000)
-// under the /install path and blocks until the .env file has been written.
+// RunInstallServer starts the install UI and REST API on listenAddr
+// (default :8000), then blocks until installation has been finalized.
 // The caller should then proceed with normal app initialisation (bootstrap.InitApp).
 func RunInstallServer(listenAddr, envFilePath string) {
 	if listenAddr == "" {
@@ -264,13 +281,18 @@ var formControlledKeys = map[string]bool{
 	"install":                true,
 }
 
-// writeEnvFile renders and writes a minimal .env file.
+type envTemplateData struct {
+	*InstallRequest
+	InstallValue string
+}
+
+// writeEnvFile renders and atomically writes a minimal .env file.
 // If the file already exists, values for keys that are NOT controlled by the
 // install form are preserved from the existing file so that operator-specific
 // settings (tg_bot_token, db_type, etc.) survive a re-install.
 // Keys that the form controls (app_uri, http_listen, …) always use the
 // submitted values.
-func writeEnvFile(path string, r *InstallRequest) error {
+func writeEnvFile(path string, r *InstallRequest, installEnabled bool) error {
 	// Collect existing non-empty key→value pairs for non-form keys.
 	existingValues := map[string]string{}
 	if data, err := os.ReadFile(path); err == nil {
@@ -295,7 +317,14 @@ func writeEnvFile(path string, r *InstallRequest) error {
 
 	// Render the template into a buffer first.
 	var buf bytes.Buffer
-	if err := envTemplate.Execute(&buf, r); err != nil {
+	renderData := envTemplateData{
+		InstallRequest: r,
+		InstallValue:   "false",
+	}
+	if installEnabled {
+		renderData.InstallValue = "true"
+	}
+	if err := envTemplate.Execute(&buf, renderData); err != nil {
 		return fmt.Errorf("render env template: %w", err)
 	}
 
@@ -315,13 +344,96 @@ func writeEnvFile(path string, r *InstallRequest) error {
 		}
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), ".env.tmp.*")
 	if err != nil {
-		return fmt.Errorf("open config file: %w", err)
+		return fmt.Errorf("open temp config file: %w", err)
 	}
-	defer f.Close()
-	_, err = fmt.Fprint(f, strings.Join(lines, "\n"))
-	return err
+	tempPath := f.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if _, err = fmt.Fprint(f, strings.Join(lines, "\n")); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace config file: %w", err)
+	}
+	return nil
+}
+
+func initializeInstallState(envFilePath string) (string, error) {
+	if err := initInstallConfig(envFilePath); err != nil {
+		return "", err
+	}
+	if err := initInstallDatabases(); err != nil {
+		closeInstallDatabases()
+		return "", err
+	}
+	defer closeInstallDatabases()
+
+	password, created, err := data.EnsureDefaultAdmin()
+	if err != nil {
+		return "", err
+	}
+	if created {
+		password = strings.TrimSpace(password)
+		if password == "" {
+			return "", errors.New("default admin created without initial password")
+		}
+		return password, nil
+	}
+
+	password, err = data.GetInitialAdminPassword()
+	if err != nil {
+		if errors.Is(err, data.ErrInitAdminPasswordUnavailable) || errors.Is(err, data.ErrInitAdminPasswordAlreadyFetched) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(password), nil
+}
+
+func initInstallConfig(envFilePath string) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("init config: %v", recovered)
+		}
+	}()
+	config.SetConfigPath(envFilePath)
+	config.Init()
+	return nil
+}
+
+func initInstallDatabases() error {
+	if appLog.Sugar == nil {
+		appLog.Sugar = zap.NewNop().Sugar()
+	}
+	if err := dao.DBInit(); err != nil {
+		return fmt.Errorf("init store db: %w", err)
+	}
+	if err := dao.RuntimeInit(); err != nil {
+		return fmt.Errorf("init runtime db: %w", err)
+	}
+	return nil
+}
+
+func closeInstallDatabases() {
+	if dao.RuntimeDB != nil {
+		if db, err := dao.RuntimeDB.DB(); err == nil {
+			_ = db.Close()
+		}
+		dao.RuntimeDB = nil
+	}
+	if dao.Mdb != nil {
+		if db, err := dao.Mdb.DB(); err == nil {
+			_ = db.Close()
+		}
+		dao.Mdb = nil
+	}
 }
 
 var envTemplate = template.Must(template.New("env").Parse(`app_name={{.AppName}}
@@ -360,5 +472,5 @@ order_notice_max_retry={{.OrderNoticeMaxRetry}}
 api_rate_url=
 
 # Set to true to re-run the install wizard on next startup.
-install=false
+install={{.InstallValue}}
 `))

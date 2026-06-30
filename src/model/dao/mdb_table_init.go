@@ -14,6 +14,12 @@ import (
 
 var once sync.Once
 
+// ResetMdbTableInitForTest resets the install/startup migration guard so tests
+// can exercise fresh temporary databases in the same process.
+func ResetMdbTableInitForTest() {
+	once = sync.Once{}
+}
+
 // MdbTableInit performs AutoMigrate for all primary DB tables and seeds
 // the minimum static rows: chains, chain tokens, default settings, and
 // a Telegram notification channel migrated from legacy settings keys.
