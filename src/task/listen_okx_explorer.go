@@ -212,10 +212,26 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 		chromedp.UserAgent(okxExplorerUserAgent),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
-	defer cancelAlloc()
+	// NewExecAllocator starts a cmd.Wait goroutine for each Chrome process, but
+	// its context cancel function does not wait for that goroutine. Keep the
+	// allocator around so cleanup can wait until the OS child has been reaped.
+	allocator := chromedp.FromContext(allocCtx).Allocator
 
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
-	defer cancelBrowser()
+	cleanup := func() {
+		// Cancel attempts a graceful Browser.close first. It may return an
+		// error when the request context already timed out; the subsequent
+		// context cancellation still guarantees process termination.
+		if err := chromedp.Cancel(browserCtx); err != nil {
+			log.Sugar.Debugf("[OKX] browser cleanup: %v", err)
+		}
+		cancelBrowser()
+		cancelAlloc()
+		if allocator != nil {
+			allocator.Wait()
+		}
+	}
+	defer cleanup()
 
 	var mu sync.Mutex
 	responses := make([]okxCapturedResponse, 0, 64)

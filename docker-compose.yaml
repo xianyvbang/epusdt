@@ -2,6 +2,8 @@ services:
   epusdt:
     image: gmwallet/epusdt:latest
     restart: always
+    # Reap orphaned Chromium helper processes when the browser exits.
+    init: true
     build:
       context: .
       dockerfile: Dockerfile
