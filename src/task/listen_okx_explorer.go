@@ -30,9 +30,11 @@ import (
 const (
 	okxExplorerPollInterval   = 10 * time.Second
 	okxExplorerDefaultHTMLURL = "https://web3.okx.com/zh-hans/explorer/{chain}/address/{address}/token-transfer"
-	okxExplorerUserAgent      = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+	// Keep the UA aligned with the Chromium version shipped in the Alpine
+	// image. A stale Chrome/135 UA is rejected by OKX's explorer frontend.
+	okxExplorerUserAgent      = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.64 Safari/537.36"
 	okxExplorerBrowserTimeout = 30 * time.Second
-	okxExplorerBrowserWait    = 8 * time.Second
+	okxExplorerBrowserWait    = 15 * time.Second
 )
 
 var (
@@ -203,6 +205,7 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("hide-scrollbars", true),
