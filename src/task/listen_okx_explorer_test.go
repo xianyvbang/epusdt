@@ -43,7 +43,7 @@ func TestBuildOkxExplorerHTMLURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build page template url: %v", err)
 	}
-	want := "https://web3.okx.com/zh-hans/explorer/bsc/address/0xabc/token-transfer"
+	want := "https://web3.okx.com/explorer/bsc/address/0xabc/token-transfer"
 	if got != want {
 		t.Fatalf("html url = %q, want %q", got, want)
 	}
@@ -56,9 +56,41 @@ func TestBuildOkxExplorerHTMLURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build html template url: %v", err)
 	}
-	want = "https://web3.okx.com/zh-hans/explorer/eth/address/0xdef/token-transfer"
+	want = "https://web3.okx.com/explorer/eth/address/0xdef/token-transfer"
 	if got != want {
 		t.Fatalf("html url = %q, want %q", got, want)
+	}
+
+	got, err = buildOkxExplorerHTMLURL("", mdb.NetworkPolygon, "0xabc")
+	if err != nil || got != "https://web3.okx.com/explorer/polygon/address/0xabc/token-transfer" {
+		t.Fatalf("default html url = %q, err=%v", got, err)
+	}
+}
+
+func TestParseOkxExplorerCurrentTransferResponse(t *testing.T) {
+	body := []byte(`{
+		"code": 0,
+		"data": {
+			"total": 1,
+			"hits": [{
+				"txhash": "0x6bd39c3573b2d890a3d3942a3714cefcd8f514fb863413c9db62f216fc571a65",
+				"to": "0x1a1f3c8e3a0cf34c66c752d2149436aa1dc09a3a",
+				"tokenContractAddress": "0x55d398326f99059ff775485246999027b3197955",
+				"symbol": "USDT",
+				"value": 1.49,
+				"blocktime": 1790130672
+			}]
+		}
+	}`)
+	transfers, err := ParseOkxExplorerTransfers(body, mdb.NetworkBsc)
+	if err != nil || len(transfers) != 1 {
+		t.Fatalf("current OKX response transfers=%#v, err=%v", transfers, err)
+	}
+	got := transfers[0]
+	if got.TxHash != "0x6bd39c3573b2d890a3d3942a3714cefcd8f514fb863413c9db62f216fc571a65" ||
+		got.ToAddress != "0x1a1f3c8e3a0cf34c66c752d2149436aa1dc09a3a" ||
+		got.TokenSymbol != "USDT" || got.Amount != 1.49 || got.BlockTimeMs != 1_790_130_672_000 || !got.Success {
+		t.Fatalf("current OKX response parsed incorrectly: %#v", got)
 	}
 }
 
@@ -295,7 +327,7 @@ func TestOkxExplorerScannerProcessesMatchingBscTransfer(t *testing.T) {
 	if err := scanner.pollOnce(); err != nil {
 		t.Fatalf("pollOnce(): %v", err)
 	}
-	if gotURL != "https://web3.okx.com/zh-hans/explorer/bsc/address/"+receive+"/token-transfer" || gotNetwork != mdb.NetworkBsc || gotAddress != receive {
+	if gotURL != "https://web3.okx.com/explorer/bsc/address/"+receive+"/token-transfer" || gotNetwork != mdb.NetworkBsc || gotAddress != receive {
 		t.Fatalf("browser fetch args url=%q network=%q address=%q", gotURL, gotNetwork, gotAddress)
 	}
 

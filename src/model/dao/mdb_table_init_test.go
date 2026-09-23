@@ -121,9 +121,9 @@ func TestSeedRpcNodesBackfillsDefaultOkxNodes(t *testing.T) {
 	}
 
 	wantChains := map[string]string{
-		mdb.NetworkBsc:      "https://web3.okx.com/zh-hans/explorer/bsc/address/{address}/token-transfer",
-		mdb.NetworkEthereum: "https://web3.okx.com/zh-hans/explorer/eth/address/{address}/token-transfer",
-		mdb.NetworkPolygon:  "https://web3.okx.com/zh-hans/explorer/polygon/address/{address}/token-transfer",
+		mdb.NetworkBsc:      "https://web3.okx.com/explorer/bsc/address/{address}/token-transfer",
+		mdb.NetworkEthereum: "https://web3.okx.com/explorer/eth/address/{address}/token-transfer",
+		mdb.NetworkPolygon:  "https://web3.okx.com/explorer/polygon/address/{address}/token-transfer",
 	}
 	for _, row := range rows {
 		wantURL, ok := wantChains[row.Network]

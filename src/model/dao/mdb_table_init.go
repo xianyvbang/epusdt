@@ -179,9 +179,9 @@ func seedDefaultOkxRpcNodes() {
 
 func defaultOkxRpcNodes() []mdb.RpcNode {
 	return []mdb.RpcNode{
-		{Network: mdb.NetworkBsc, Url: "https://web3.okx.com/zh-hans/explorer/bsc/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
-		{Network: mdb.NetworkEthereum, Url: "https://web3.okx.com/zh-hans/explorer/eth/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
-		{Network: mdb.NetworkPolygon, Url: "https://web3.okx.com/zh-hans/explorer/polygon/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkBsc, Url: "https://web3.okx.com/explorer/bsc/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkEthereum, Url: "https://web3.okx.com/explorer/eth/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
+		{Network: mdb.NetworkPolygon, Url: "https://web3.okx.com/explorer/polygon/address/{address}/token-transfer", Type: mdb.RpcNodeTypeOkx, Weight: 1, Enabled: true, Purpose: mdb.RpcNodePurposeGeneral, Status: mdb.RpcNodeStatusUnknown},
 	}
 }
 

@@ -29,7 +29,7 @@ import (
 
 const (
 	okxExplorerPollInterval   = 10 * time.Second
-	okxExplorerDefaultHTMLURL = "https://web3.okx.com/zh-hans/explorer/{chain}/address/{address}/token-transfer"
+	okxExplorerDefaultHTMLURL = "https://web3.okx.com/explorer/{chain}/address/{address}/token-transfer"
 	// Keep the UA aligned with the Chromium version shipped in the Alpine
 	// image. A stale Chrome/135 UA is rejected by OKX's explorer frontend.
 	okxExplorerUserAgent      = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.64 Safari/537.36"
@@ -185,6 +185,7 @@ type okxBrowserCapture struct {
 	ResponseBodies [][]byte
 	DOMHTML        string
 	DOMRowsJSON    string
+	FinalURL       string
 }
 
 type okxCapturedResponse struct {
@@ -270,6 +271,7 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 		chromedp.Sleep(okxExplorerBrowserWait),
 		chromedp.OuterHTML("html", &capture.DOMHTML, chromedp.ByQuery),
 		chromedp.Evaluate(okxDOMRowsScript(address), &capture.DOMRowsJSON),
+		chromedp.Location(&capture.FinalURL),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			mu.Lock()
 			copied := append([]okxCapturedResponse(nil), responses...)
@@ -290,6 +292,9 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 	)
 	if err != nil {
 		return okxBrowserCapture{}, err
+	}
+	if finalURL, err := url.Parse(capture.FinalURL); err == nil && finalURL.Hostname() == "web3.okx.com" && !strings.Contains(finalURL.Path, "/explorer/") {
+		return okxBrowserCapture{}, fmt.Errorf("okx explorer redirected to %s", finalURL.Path)
 	}
 	return capture, nil
 }
@@ -498,6 +503,10 @@ func buildOkxExplorerHTMLURL(templateURL, network, address string) (string, erro
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return "", fmt.Errorf("invalid okx explorer url")
+	}
+	if parsed.Hostname() == "web3.okx.com" && strings.HasPrefix(parsed.Path, "/zh-hans/explorer/") {
+		parsed.Path = strings.TrimPrefix(parsed.Path, "/zh-hans")
+		parsed.RawPath = ""
 	}
 	return parsed.String(), nil
 }
