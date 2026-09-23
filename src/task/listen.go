@@ -45,6 +45,13 @@ func Start() {
 	}
 	log.Sugar.Infof("[task] EvmRpcBackfillJob scheduled successfully (@every %s)", evmBackfillPollInterval)
 
+	_, err = c.AddJob("@every "+okxExplorerPollInterval.String(), OkxExplorerJob{})
+	if err != nil {
+		log.Sugar.Errorf("[task] Failed to add OkxExplorerJob: %v", err)
+		return
+	}
+	log.Sugar.Infof("[task] OkxExplorerJob scheduled successfully (@every %s)", okxExplorerPollInterval)
+
 	c.Start()
 	log.Sugar.Info("[task] Task scheduler started")
 }

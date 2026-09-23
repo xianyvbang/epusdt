@@ -77,7 +77,9 @@ var gOkxExplorerJobLock sync.Mutex
 type OkxExplorerJob struct{}
 
 func (OkxExplorerJob) Run() {
-	gOkxExplorerJobLock.Lock()
+	if !gOkxExplorerJobLock.TryLock() {
+		return
+	}
 	defer gOkxExplorerJobLock.Unlock()
 
 	scanner := okxExplorerScanner{}
