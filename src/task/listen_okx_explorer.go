@@ -9,12 +9,15 @@ import (
 	"fmt"
 	stdhtml "html"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/request"
@@ -23,6 +26,7 @@ import (
 	"github.com/GMWalletApp/epusdt/util/log"
 	"github.com/GMWalletApp/epusdt/util/math"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/shopspring/decimal"
 )
@@ -33,11 +37,25 @@ const (
 	// Keep the UA aligned with the Chromium version shipped in the Alpine
 	// image. A stale Chrome/135 UA is rejected by OKX's explorer frontend.
 	okxExplorerUserAgent      = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.64 Safari/537.36"
-	okxExplorerBrowserTimeout = 30 * time.Second
+	okxExplorerBrowserTimeout = 45 * time.Second
 	okxExplorerBrowserWait    = 15 * time.Second
+	// The landing page is visited before each address page so OKX's risk SDK
+	// can issue device cookies from a normal navigation flow first.
+	okxExplorerWarmupURL  = "https://web3.okx.com/explorer"
+	okxExplorerWarmupWait = 2 * time.Second
 )
 
 var (
+	// Persistent Chromium user-data-dir, relative to config.RuntimePath (or
+	// absolute to override). chromedp's default allocator gives every capture
+	// a throwaway profile, so each poll presents a brand new device from a
+	// datacenter IP and OKX's risk engine refuses to issue the temporary API
+	// credentials (device risk check failed, then a redirect to
+	// /account/login). One stable profile keeps the device identity and
+	// cookies consistent across polls. Var so tests can point it at a temp
+	// dir.
+	okxProfileRootDir = "chrome-profile"
+
 	okxSupportedNetworks = []string{mdb.NetworkBsc, mdb.NetworkEthereum, mdb.NetworkPolygon}
 	okxHTMLJSONScriptRe  = regexp.MustCompile(`(?is)<script\b[^>]*type=["']application/json["'][^>]*>(.*?)</script>`)
 	okxHTMLScriptRe      = regexp.MustCompile(`(?is)<script\b[^>]*>(.*?)</script>`)
@@ -206,17 +224,34 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 	ctx, cancel := context.WithTimeout(context.Background(), okxExplorerBrowserTimeout)
 	defer cancel()
 
+	// okxProfileDir() already created the directory when it returns a
+	// non-empty path, and returns "" (chromedp temp profile fallback) when
+	// the persistent location is unusable.
+	profileDir := okxProfileDir()
+
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		// chromedp's defaults carry --enable-automation, which marks the
+		// session as CDP-driven; a false bool flag is simply not emitted.
+		chromedp.Flag("enable-automation", false),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("hide-scrollbars", true),
 		chromedp.Flag("mute-audio", true),
 		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("blink-settings", "imagesEnabled=false"),
+		chromedp.Flag("lang", "en-US"),
+		// Headless defaults to an 800x600 viewport, a classic bot tell.
+		chromedp.WindowSize(1440, 900),
 		chromedp.UserAgent(okxExplorerUserAgent),
 	)
+	// Images stay enabled deliberately: OKX's device risk SDK measures its
+	// tracking pixels, and a session that never loads them reads as
+	// automated. The persistent profile below keeps cookies and the device
+	// fingerprint stable across polls instead of a fresh identity each time.
+	if profileDir != "" {
+		allocOpts = append(allocOpts, chromedp.UserDataDir(profileDir))
+	}
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
 	// NewExecAllocator starts a cmd.Wait goroutine for each Chrome process, but
 	// its context cancel function does not wait for that goroutine. Keep the
@@ -266,6 +301,17 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 	capture := okxBrowserCapture{}
 	err := chromedp.Run(browserCtx,
 		network.Enable(),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(okxStealthInitScript).Do(ctx)
+			return err
+		}),
+		// Visit the landing page first so OKX's risk SDK issues its device
+		// cookies through a plain navigation before the address page's XHRs
+		// ask for temporary API credentials. Jumping straight into a deep
+		// link from a cold profile is one of the signals behind "device
+		// risk check failed".
+		chromedp.Navigate(okxExplorerWarmupURL),
+		chromedp.Sleep(okxExplorerWarmupWait),
 		chromedp.Navigate(pageURL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.Sleep(okxExplorerBrowserWait),
@@ -299,6 +345,46 @@ func captureOkxExplorerPage(pageURL string, address string) (okxBrowserCapture, 
 	return capture, nil
 }
 
+// okxProfileDir returns the persistent Chromium user-data-dir shared by all
+// OKX captures. It lives under config.RuntimePath so it survives container
+// redeploys when runtime_root_path points at a mounted volume. A single
+// profile is deliberate: the explorer pages for different addresses run
+// sequentially inside one poll loop, so there is no concurrent access and
+// the shared device identity is exactly what OKX's risk engine wants to
+// see. Returns "" when the location is unusable (empty base or unwritable
+// path), in which case chromedp falls back to its throwaway profile.
+func okxProfileDir() string {
+	if okxProfileRootDir == "" {
+		return ""
+	}
+	base := okxProfileRootDir
+	if !filepath.IsAbs(base) {
+		runtimeBase := strings.TrimSpace(config.RuntimePath)
+		if runtimeBase == "" {
+			// config.Init() not run (unit tests); keep it local and temp-ish.
+			runtimeBase = ".runtime"
+		}
+		base = filepath.Join(runtimeBase, filepath.FromSlash(base))
+	}
+	abs, err := filepath.Abs(base)
+	if err != nil {
+		return ""
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return ""
+	}
+	probe := filepath.Join(abs, ".writable")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		// Profile dir exists but is not writable; Chrome would fail to hold
+		// its lock file there, so fall back to a temp dir.
+		return ""
+	}
+	_ = f.Close()
+	_ = os.Remove(probe)
+	return abs
+}
+
 func shouldCaptureOkxBrowserResponse(ev *network.EventResponseReceived) bool {
 	if ev.Response == nil {
 		return false
@@ -318,6 +404,62 @@ func shouldCaptureOkxBrowserResponse(ev *network.EventResponseReceived) bool {
 			strings.Contains(rawURL, "address") ||
 			strings.Contains(rawURL, "token"))
 }
+
+// okxStealthInitScript patches the runtime environment before any page
+// script runs on every navigation. Each patch targets a headless-Chromium
+// tell that OKX's device risk SDK is known to collect: an empty plugin
+// array, the SwiftShader/llvmpipe WebGL renderer string, and permission
+// queries that resolve instantly without a user gesture.
+const okxStealthInitScript = `(() => {
+	const defineGetter = (obj, prop, value) => {
+		try {
+			Object.defineProperty(obj, prop, {get: () => value, configurable: true});
+		} catch (e) {}
+	};
+	// navigator.webdriver is the single most-checked automation marker.
+	defineGetter(navigator, 'webdriver', false);
+	if (!window.chrome) {
+		window.chrome = {runtime: {}};
+	}
+	// navigator.plugins / mimeTypes are empty in headless; ship a plausible
+	// Chrome-on-Linux set.
+	const pluginData = [
+		['Chrome PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'],
+		['Chromium PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'],
+		['Microsoft Edge PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'],
+		['WebKit built-in PDF', 'internal-pdf-viewer', 'Portable Document Format']
+	];
+	const fakePlugins = pluginData.map(([name, filename, description]) => {
+		const p = {name, filename, description, length: 1};
+		p[0] = {type: 'application/pdf', suffixes: 'pdf', description};
+		return p;
+	});
+	defineGetter(navigator, 'plugins', fakePlugins);
+	defineGetter(navigator, 'mimeTypes', [{type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format'}]);
+	// Headless reports no languages on some builds even with --lang set.
+	if (!navigator.languages || navigator.languages.length === 0) {
+		defineGetter(navigator, 'languages', ['en-US', 'en']);
+		defineGetter(navigator, 'language', 'en-US');
+	}
+	// WebGL vendor/renderer leak the software rasterizer used by headless.
+	const patchGetParameter = (proto) => {
+		const orig = proto.getParameter;
+		proto.getParameter = function(param) {
+			if (param === 37445) return 'Intel Inc.';
+			if (param === 37446) return 'Intel Iris OpenGL Engine';
+			return orig.apply(this, arguments);
+		};
+	};
+	if (window.WebGLRenderingContext) patchGetParameter(WebGLRenderingContext.prototype);
+	if (window.WebGL2RenderingContext) patchGetParameter(WebGL2RenderingContext.prototype);
+	// Notification permission resolves without a gesture in automation.
+	if (window.Notification && navigator.permissions && navigator.permissions.query) {
+		const origQuery = navigator.permissions.query.bind(navigator.permissions);
+		navigator.permissions.query = (desc) => desc && desc.name === 'notifications'
+			? Promise.resolve({state: 'denied', onchange: null})
+			: origQuery(desc);
+	}
+})();`
 
 func parseOkxExplorerBrowserCapture(capture okxBrowserCapture, networkName string, address string) []OkxObservedTransfer {
 	targetAddress := normalizeOkxEvmAddress(address)

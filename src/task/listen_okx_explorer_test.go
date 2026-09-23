@@ -2,15 +2,68 @@ package task
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/internal/testutil"
 	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/data"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 )
+
+func TestOkxProfileDirUsesRuntimePathAndFallsBackWhenUnwritable(t *testing.T) {
+	origRoot, origRuntime := okxProfileRootDir, config.RuntimePath
+	t.Cleanup(func() {
+		okxProfileRootDir, config.RuntimePath = origRoot, origRuntime
+	})
+
+	// Relative root resolves under config.RuntimePath, which is where
+	// deployments point their mounted volume.
+	config.RuntimePath = t.TempDir()
+	okxProfileRootDir = "chrome-profile"
+	dir := okxProfileDir()
+	if dir == "" {
+		t.Fatal("okxProfileDir() = empty, want a persistent dir under RuntimePath")
+	}
+	if !strings.HasPrefix(dir, config.RuntimePath) {
+		t.Fatalf("okxProfileDir() = %q, want under %q", dir, config.RuntimePath)
+	}
+
+	// An absolute root is honored as-is.
+	okxProfileRootDir = filepath.Join(t.TempDir(), "abs-profile")
+	if dir = okxProfileDir(); dir != okxProfileRootDir {
+		t.Fatalf("okxProfileDir() = %q, want %q", dir, okxProfileRootDir)
+	}
+
+	// A read-only base must disable the persistent profile instead of
+	// breaking captures: Chrome cannot lock an unwritable user-data-dir.
+	// Windows chmod does not enforce directory write bits, so this behavior
+	// is only observable on POSIX (the deployment target).
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only dir semantics not enforceable on windows")
+	}
+	readOnly := t.TempDir()
+	if err := os.Chmod(readOnly, 0o500); err != nil {
+		t.Skipf("cannot make temp dir read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o700) })
+	config.RuntimePath = readOnly
+	okxProfileRootDir = "chrome-profile"
+	if dir = okxProfileDir(); dir != "" {
+		t.Fatalf("okxProfileDir() = %q, want empty fallback for read-only runtime path", dir)
+	}
+
+	// Empty root disables persistence entirely.
+	okxProfileRootDir = ""
+	if dir = okxProfileDir(); dir != "" {
+		t.Fatalf("okxProfileDir() = %q, want empty for empty root", dir)
+	}
+}
 
 func TestOkxChainName(t *testing.T) {
 	tests := []struct {
