@@ -342,6 +342,7 @@ func (c *BaseAdminController) ListOrdersWithSub(ctx echo.Context) error {
 	f := parseOrderFilter(ctx)
 	// Only parent orders at the top level; sub-orders appear nested inside sub_orders.
 	f.ParentOnly = true
+	f.IncludeSettledParents = true
 	rows, total, err := data.ListOrders(f)
 	if err != nil {
 		return c.FailJson(ctx, err)

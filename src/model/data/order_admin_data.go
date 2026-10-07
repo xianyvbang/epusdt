@@ -25,6 +25,10 @@ type OrderListFilter struct {
 	// ParentOnly restricts the result to top-level orders only
 	// (parent_trade_id = ''). Sub-orders are excluded from the listing.
 	ParentOnly bool
+	// IncludeSettledParents keeps parent rows whose payment was settled by a
+	// sub-order. The default order list hides those rows so one payment appears
+	// once; the explicit list-with-sub view enables this field.
+	IncludeSettledParents bool
 }
 
 // ListOrders returns a paginated order slice plus the total count under
@@ -55,6 +59,9 @@ func ListOrders(f OrderListFilter) ([]mdb.Orders, int64, error) {
 
 func buildOrderListQuery(f OrderListFilter) *gorm.DB {
 	tx := dao.Mdb.Model(&mdb.Orders{})
+	if !f.IncludeSettledParents {
+		tx = applySettlementRecordScope(tx)
+	}
 	if f.ParentOnly {
 		tx = tx.Where("parent_trade_id = ?", "")
 	}
@@ -91,7 +98,7 @@ func CountOrdersByStatus() (map[int]int64, error) {
 		Total  int64
 	}
 	var rows []row
-	err := dao.Mdb.Model(&mdb.Orders{}).
+	err := applySettlementRecordScope(dao.Mdb.Model(&mdb.Orders{})).
 		Select("status, COUNT(*) AS total").
 		Group("status").
 		Scan(&rows).Error

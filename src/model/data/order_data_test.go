@@ -2,11 +2,13 @@ package data
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/GMWalletApp/epusdt/internal/testutil"
+	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/xssnick/tonutils-go/address"
 )
@@ -90,6 +92,88 @@ func TestStatsBucketExprForDialect(t *testing.T) {
 func TestStatsBucketExprRejectsUnsupportedDialect(t *testing.T) {
 	if _, err := statsBucketExprForDialect("mysql", "created_at", false); err == nil {
 		t.Fatal("expected unsupported mysql dialect error")
+	}
+}
+
+func TestSettlementStatsCountChildOnlyWhenParentPaidBySubOrder(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+
+	child := &mdb.Orders{
+		TradeId:        "trade-settlement-child",
+		OrderId:        "order-settlement-child",
+		ParentTradeId:  "trade-settlement-parent",
+		Amount:         100,
+		Currency:       "CNY",
+		ActualAmount:   10,
+		ReceiveAddress: "0xchild",
+		Token:          "USDT",
+		Network:        mdb.NetworkBsc,
+		Status:         mdb.StatusPaySuccess,
+	}
+	if err := dao.Mdb.Create(child).Error; err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	parent := &mdb.Orders{
+		TradeId:       "trade-settlement-parent",
+		OrderId:       "order-settlement-parent",
+		Amount:        100,
+		Currency:      "CNY",
+		Status:        mdb.StatusPaySuccess,
+		PayBySubId:      child.ID,
+		CallbackNum:     0,
+		CallBackConfirm: mdb.CallBackConfirmNo,
+	}
+	if err := dao.Mdb.Create(parent).Error; err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	direct := &mdb.Orders{
+		TradeId:        "trade-settlement-direct",
+		OrderId:        "order-settlement-direct",
+		Amount:         50,
+		Currency:       "CNY",
+		ActualAmount:   5,
+		ReceiveAddress: "Tdirect",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusPaySuccess,
+	}
+	if err := dao.Mdb.Create(direct).Error; err != nil {
+		t.Fatalf("create direct order: %v", err)
+	}
+
+	start := time.Now().Add(-time.Hour)
+	end := time.Now().Add(time.Hour)
+	orderCount, successCount, actualSum, err := PaidStatsInRange(start, end)
+	if err != nil {
+		t.Fatalf("paid stats: %v", err)
+	}
+	if orderCount != 2 || successCount != 2 {
+		t.Fatalf("paid stats counts = %d/%d, want 2/2", orderCount, successCount)
+	}
+	if math.Abs(actualSum-15) > 1e-9 {
+		t.Fatalf("paid stats actual sum = %v, want 15", actualSum)
+	}
+
+	totalActual, err := SumPaidActualAmount()
+	if err != nil {
+		t.Fatalf("sum paid actual amount: %v", err)
+	}
+	if math.Abs(totalActual-15) > 1e-9 {
+		t.Fatalf("total actual = %v, want 15", totalActual)
+	}
+
+	rows, total, err := ListOrders(OrderListFilter{Status: mdb.StatusPaySuccess, Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list settlement orders: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Fatalf("settlement list total/rows = %d/%d, want 2/2", total, len(rows))
+	}
+	for _, row := range rows {
+		if row.TradeId == parent.TradeId {
+			t.Fatalf("settlement list included paid parent %q", row.TradeId)
+		}
 	}
 }
 
