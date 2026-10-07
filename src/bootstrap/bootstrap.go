@@ -34,6 +34,9 @@ func InitApp() {
 		config.SettingsGetString = func(key string) string {
 			return data.GetSettingString(key, "")
 		}
+		config.RateCacheLoad = data.LoadRateCacheSnapshot
+		config.RateCacheLoadAll = data.ListRateCacheSnapshots
+		config.RateCacheSave = data.SaveRateCacheSnapshot
 		// Seed rate.api_url from .env into the settings table on first run
 		// so the admin UI can display and change it without a code restart.
 		// Only written if the key is not already present in the DB.
@@ -43,6 +46,9 @@ func InitApp() {
 					color.Red.Printf("[bootstrap] seed rate.api_url err=%s\n", err)
 				}
 			}
+		}
+		if err := data.EnsureDefaultForcedRateList(); err != nil {
+			color.Red.Printf("[bootstrap] seed rate.forced_rate_list err=%s\n", err)
 		}
 		// Seed admin account and JWT secret so the management console is
 		// immediately usable on a fresh install. Both are idempotent.

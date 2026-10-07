@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/util/http_client"
 	"github.com/go-resty/resty/v2"
 	"github.com/spf13/viper"
@@ -19,11 +20,13 @@ func installSettingsGetter(t *testing.T, values map[string]string) {
 	t.Helper()
 
 	oldGetter := SettingsGetString
+	ResetRateCacheRuntime()
 	SettingsGetString = func(key string) string {
 		return values[key]
 	}
 	t.Cleanup(func() {
 		SettingsGetString = oldGetter
+		ResetRateCacheRuntime()
 	})
 }
 
@@ -265,6 +268,54 @@ func TestGetUsdtRatePrefersForcedRateList(t *testing.T) {
 	}
 }
 
+func TestGetRateForCoinUsesDefaultForcedRateList(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("API_RATE_URL", "")
+
+	installMockHTTPClient(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("rate API should not be called when default rate.forced_rate_list has positive rate")
+		return nil, nil
+	})
+
+	installSettingsGetter(t, map[string]string{
+		"rate.forced_rate_list": mdb.SettingDefaultRateForcedRateList,
+		"rate.api_url":          "",
+	})
+
+	want := 1.0 / 6.8
+	for _, coin := range []string{"usdt", "usdc"} {
+		if got := GetRateForCoin(coin, "cny"); math.Abs(got-want) > 1e-12 {
+			t.Fatalf("GetRateForCoin(%s, cny) = %v, want %v", coin, got, want)
+		}
+	}
+}
+
+func TestFixedModeForcedRateOverridesUSDTPeg(t *testing.T) {
+	installSettingsGetter(t, map[string]string{
+		"rate.mode":             RateModeFixed,
+		"rate.forced_rate_list": `{"usd":{"usdt":0.99}}`,
+	})
+	if got := GetRateForCoin("usdt", "usd"); got != 0.99 {
+		t.Fatalf("fixed USD/USDT rate = %v, want configured 0.99", got)
+	}
+}
+
+func TestFixedModeDoesNotFallBackToRateAPI(t *testing.T) {
+	installSettingsGetter(t, map[string]string{
+		"rate.mode":             RateModeFixed,
+		"rate.forced_rate_list": `{"cny":{"usdt":0}}`,
+		"rate.api_url":          "https://rate.example.test",
+	})
+	installMockHTTPClient(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatal("fixed mode must not call the rate API")
+		return nil, nil
+	})
+	if got := GetRateForCoin("usdt", "cny"); got != 0 {
+		t.Fatalf("fixed missing rate = %v, want 0", got)
+	}
+}
+
 func TestGetUsdtRateUsesAPIWhenAdminOverrideIsNotPositive(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -286,6 +337,7 @@ func TestGetUsdtRateUsesAPIWhenAdminOverrideIsNotPositive(t *testing.T) {
 	installSettingsGetter(t, map[string]string{
 		"rate.forced_rate_list": `{"cny":{"usdt":0}}`,
 		"rate.api_url":          "https://rate.example.test",
+		"rate.mode":             RateModeAuto,
 	})
 
 	got := GetUsdtRate()
@@ -321,6 +373,7 @@ func TestGetRateForCoinUsesAPIWhenForcedPairMissing(t *testing.T) {
 	installSettingsGetter(t, map[string]string{
 		"rate.forced_rate_list": `{"usd":{"trx":123.45}}`,
 		"rate.api_url":          "https://rate.example.test",
+		"rate.mode":             RateModeAuto,
 	})
 
 	rate := GetRateForCoin("usdt", "cny")
@@ -350,6 +403,7 @@ func TestGetRateForCoinUsesToncoinAPIFallbackForTon(t *testing.T) {
 	installSettingsGetter(t, map[string]string{
 		"rate.forced_rate_list": `{"cny":{"ton":0}}`,
 		"rate.api_url":          "https://rate.example.test",
+		"rate.mode":             RateModeAuto,
 	})
 
 	rate := GetRateForCoin("ton", "cny")
@@ -376,6 +430,7 @@ func TestGetUsdtRateReturnsZeroWhenAPIUnavailableWithoutAdminOverride(t *testing
 	installSettingsGetter(t, map[string]string{
 		"rate.forced_rate_list": `{"cny":{"usdt":0}}`,
 		"rate.api_url":          "https://rate.example.test",
+		"rate.mode":             RateModeAuto,
 	})
 
 	if got := GetUsdtRate(); got != 0 {
@@ -406,6 +461,7 @@ func TestGetRateForCoinCallsRateAPIOnceForUsdtCnyFailure(t *testing.T) {
 	installSettingsGetter(t, map[string]string{
 		"rate.forced_rate_list": `{"cny":{"usdt":0}}`,
 		"rate.api_url":          "https://rate.example.test",
+		"rate.mode":             RateModeAuto,
 	})
 
 	if got := GetRateForCoin("usdt", "cny"); got != 0 {

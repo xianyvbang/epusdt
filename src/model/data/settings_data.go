@@ -138,6 +138,16 @@ func GetAmountPrecision() int {
 	return NormalizeAmountPrecision(GetSettingInt(mdb.SettingKeyAmountPrecision, DefaultAmountPrecision))
 }
 
+// EnsureDefaultForcedRateList restores the built-in CNY stablecoin rate only
+// when the forced rate setting is completely empty. Any non-empty user JSON is
+// treated as intentional and is never merged or overwritten.
+func EnsureDefaultForcedRateList() error {
+	if strings.TrimSpace(GetSettingString(mdb.SettingKeyRateForcedRateList, "")) != "" {
+		return nil
+	}
+	return SetSetting(mdb.SettingGroupRate, mdb.SettingKeyRateForcedRateList, mdb.SettingDefaultRateForcedRateList, mdb.SettingTypeJSON)
+}
+
 // SetSetting upserts a setting row and refreshes the cache entry.
 func SetSetting(group, key, value, valueType string) error {
 	if valueType == "" {

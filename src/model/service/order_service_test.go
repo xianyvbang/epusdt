@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GMWalletApp/epusdt/config"
 	"github.com/GMWalletApp/epusdt/internal/testutil"
 	"github.com/GMWalletApp/epusdt/model/dao"
 	"github.com/GMWalletApp/epusdt/model/data"
@@ -289,6 +290,9 @@ func TestCreateTransactionUsesRateAPIWhenForcedSettingIsNotPositive(t *testing.T
 	if err := data.SetSetting("rate", "rate.api_url", "https://rate.example.test", "string"); err != nil {
 		t.Fatalf("set rate.api_url: %v", err)
 	}
+	if err := data.SetSetting("rate", "rate.mode", config.RateModeAuto, "string"); err != nil {
+		t.Fatalf("set rate.mode: %v", err)
+	}
 	if _, err := data.AddWalletAddress("wallet_1"); err != nil {
 		t.Fatalf("add wallet: %v", err)
 	}
@@ -302,15 +306,71 @@ func TestCreateTransactionUsesRateAPIWhenForcedSettingIsNotPositive(t *testing.T
 	}
 }
 
+func TestCreateTransactionUsesDefaultForcedRateWithoutRateAPI(t *testing.T) {
+	cleanup := testutil.SetupTestDatabases(t)
+	defer cleanup()
+	t.Setenv("API_RATE_URL", "")
+
+	installMockHTTPClient(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("rate API should not be called when default rate.forced_rate_list has positive rate")
+		return nil, nil
+	})
+
+	if err := data.SetSetting("rate", "rate.forced_rate_list", mdb.SettingDefaultRateForcedRateList, "json"); err != nil {
+		t.Fatalf("set rate.forced_rate_list: %v", err)
+	}
+	if err := data.SetSetting("rate", "rate.api_url", "", "string"); err != nil {
+		t.Fatalf("clear rate.api_url: %v", err)
+	}
+	if _, err := data.AddWalletAddress("wallet_default_rate_usdt"); err != nil {
+		t.Fatalf("add tron wallet: %v", err)
+	}
+	if _, err := data.AddWalletAddressWithNetwork(mdb.NetworkSolana, "SolDefaultRateAddress001"); err != nil {
+		t.Fatalf("add solana wallet: %v", err)
+	}
+	if err := dao.Mdb.Create(&mdb.ChainToken{
+		Network:         mdb.NetworkSolana,
+		Symbol:          "USDC",
+		ContractAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+		Decimals:        6,
+		Enabled:         true,
+	}).Error; err != nil {
+		t.Fatalf("seed solana USDC token: %v", err)
+	}
+
+	usdtResp, err := CreateTransaction(newCreateTransactionRequest("order_default_rate_usdt_1", 10), nil)
+	if err != nil {
+		t.Fatalf("create USDT transaction: %v", err)
+	}
+	if got := fmt.Sprintf("%.2f", usdtResp.ActualAmount); got != "1.47" {
+		t.Fatalf("USDT actual amount = %s, want 1.47", got)
+	}
+
+	usdcReq := newCreateTransactionRequest("order_default_rate_usdc_1", 10)
+	usdcReq.Network = mdb.NetworkSolana
+	usdcReq.Token = "USDC"
+	usdcResp, err := CreateTransaction(usdcReq, nil)
+	if err != nil {
+		t.Fatalf("create USDC transaction: %v", err)
+	}
+	if got := fmt.Sprintf("%.2f", usdcResp.ActualAmount); got != "1.47" {
+		t.Fatalf("USDC actual amount = %s, want 1.47", got)
+	}
+}
+
 func TestCreateTransactionFailsWhenRateAPIUnavailableAndForcedSettingIsNotPositive(t *testing.T) {
 	cleanup := testutil.SetupTestDatabases(t)
 	defer cleanup()
+	t.Setenv("API_RATE_URL", "")
 
 	if err := data.SetSetting("rate", "rate.forced_rate_list", `{"cny":{"usdt":0}}`, "json"); err != nil {
 		t.Fatalf("set rate.forced_rate_list: %v", err)
 	}
 	if err := data.SetSetting("rate", "rate.api_url", "", "string"); err != nil {
 		t.Fatalf("clear rate.api_url: %v", err)
+	}
+	if err := data.SetSetting("rate", "rate.mode", config.RateModeAuto, "string"); err != nil {
+		t.Fatalf("set rate.mode: %v", err)
 	}
 
 	_, err := CreateTransaction(newCreateTransactionRequest("order_missing_rate_1", 10), nil)

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +20,9 @@ import (
 	"github.com/GMWalletApp/epusdt/model/mdb"
 	"github.com/GMWalletApp/epusdt/model/service"
 	"github.com/GMWalletApp/epusdt/util/constant"
+	"github.com/GMWalletApp/epusdt/util/http_client"
 	appLog "github.com/GMWalletApp/epusdt/util/log"
+	"github.com/go-resty/resty/v2"
 	"github.com/labstack/echo/v4"
 )
 
@@ -235,6 +239,7 @@ func TestAdminProtectedRoute_NoToken(t *testing.T) {
 		"/admin/api/v1/dashboard/overview",
 		"/admin/api/v1/dashboard/rpc-stats",
 		"/admin/api/v1/settings",
+		"/admin/api/v1/settings/rate/status",
 		"/admin/api/v1/rpc-nodes",
 		"/admin/api/v1/notification-channels",
 	}
@@ -245,6 +250,11 @@ func TestAdminProtectedRoute_NoToken(t *testing.T) {
 		t.Logf("GET %s → %d", path, rec.Code)
 		assertUnauthorized(t, rec)
 	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/v1/settings/rate/refresh", strings.NewReader(`{}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assertUnauthorized(t, rec)
 }
 
 // TestAdminMe verifies the /auth/me route returns current user info.
@@ -851,6 +861,170 @@ func TestAdminOrders_MarkPaidSuccessAfterVerification(t *testing.T) {
 	}
 }
 
+func TestAdminOrders_MarkPaidExpiredOrderAfterVerification(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	order := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired",
+		OrderId:        "order-admin-mark-paid-expired",
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.23,
+		ReceiveAddress: "TTestTronAddressExpired",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusExpired,
+		NotifyUrl:      "https://merchant.example/notify",
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(order).Error; err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+
+	verified := false
+	restore := service.SetManualOrderPaymentValidatorForTest(func(got *mdb.Orders, blockID string) (string, error) {
+		verified = true
+		if got.TradeId != order.TradeId {
+			t.Fatalf("validator trade_id = %s, want %s", got.TradeId, order.TradeId)
+		}
+		if got.Status != mdb.StatusExpired {
+			t.Fatalf("validator status = %d, want %d", got.Status, mdb.StatusExpired)
+		}
+		if blockID != "block-admin-expired" {
+			t.Fatalf("validator block id = %s, want block-admin-expired", blockID)
+		}
+		return "canonical-block-admin-expired", nil
+	})
+	defer restore()
+
+	rec := doPostAdmin(e, "/admin/api/v1/orders/"+order.TradeId+"/mark-paid", map[string]interface{}{
+		"block_transaction_id": "block-admin-expired",
+	}, token)
+	t.Logf("MarkOrderPaid expired success: status=%d body=%s", rec.Code, rec.Body.String())
+	assertOK(t, rec)
+	if !verified {
+		t.Fatal("expected chain verifier to be called")
+	}
+
+	paid, err := data.GetOrderInfoByTradeId(order.TradeId)
+	if err != nil {
+		t.Fatalf("reload order: %v", err)
+	}
+	if paid.Status != mdb.StatusPaySuccess {
+		t.Fatalf("status = %d, want %d", paid.Status, mdb.StatusPaySuccess)
+	}
+	if paid.BlockTransactionId != "canonical-block-admin-expired" {
+		t.Fatalf("block_transaction_id = %q", paid.BlockTransactionId)
+	}
+	if paid.CallBackConfirm != mdb.CallBackConfirmNo {
+		t.Fatalf("callback_confirm = %d, want %d", paid.CallBackConfirm, mdb.CallBackConfirmNo)
+	}
+}
+
+func TestAdminOrders_MarkPaidExpiredSubOrderAfterVerification(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	parent := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired-parent",
+		OrderId:        "order-admin-mark-paid-expired-parent",
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.23,
+		ReceiveAddress: "TParentExpiredAddress",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusExpired,
+		NotifyUrl:      "https://merchant.example/notify",
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(parent).Error; err != nil {
+		t.Fatalf("create parent order: %v", err)
+	}
+	sub := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired-sub",
+		OrderId:        "order-admin-mark-paid-expired-sub",
+		ParentTradeId:  parent.TradeId,
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.23,
+		ReceiveAddress: "TSubExpiredAddress",
+		Token:          "USDT",
+		Network:        mdb.NetworkTron,
+		Status:         mdb.StatusExpired,
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(sub).Error; err != nil {
+		t.Fatalf("create sub order: %v", err)
+	}
+	sibling := &mdb.Orders{
+		TradeId:        "trade-admin-mark-paid-expired-sibling",
+		OrderId:        "order-admin-mark-paid-expired-sibling",
+		ParentTradeId:  parent.TradeId,
+		Amount:         10,
+		Currency:       "CNY",
+		ActualAmount:   1.24,
+		ReceiveAddress: "TSiblingExpiredAddress",
+		Token:          "USDT",
+		Network:        mdb.NetworkBsc,
+		Status:         mdb.StatusWaitPay,
+		PayProvider:    mdb.PaymentProviderOnChain,
+	}
+	if err := dao.Mdb.Create(sibling).Error; err != nil {
+		t.Fatalf("create sibling order: %v", err)
+	}
+
+	restore := service.SetManualOrderPaymentValidatorForTest(func(got *mdb.Orders, blockID string) (string, error) {
+		if got.TradeId != sub.TradeId {
+			t.Fatalf("validator trade_id = %s, want %s", got.TradeId, sub.TradeId)
+		}
+		if got.Status != mdb.StatusExpired {
+			t.Fatalf("validator status = %d, want %d", got.Status, mdb.StatusExpired)
+		}
+		if blockID != "block-admin-expired-sub" {
+			t.Fatalf("validator block id = %s, want block-admin-expired-sub", blockID)
+		}
+		return "canonical-block-admin-expired-sub", nil
+	})
+	defer restore()
+
+	rec := doPostAdmin(e, "/admin/api/v1/orders/"+sub.TradeId+"/mark-paid", map[string]interface{}{
+		"block_transaction_id": "block-admin-expired-sub",
+	}, token)
+	t.Logf("MarkOrderPaid expired sub success: status=%d body=%s", rec.Code, rec.Body.String())
+	assertOK(t, rec)
+
+	paidSub, err := data.GetOrderInfoByTradeId(sub.TradeId)
+	if err != nil {
+		t.Fatalf("reload sub order: %v", err)
+	}
+	if paidSub.Status != mdb.StatusPaySuccess || paidSub.BlockTransactionId != "canonical-block-admin-expired-sub" {
+		t.Fatalf("sub after mark-paid: status=%d block=%q", paidSub.Status, paidSub.BlockTransactionId)
+	}
+	if paidSub.CallBackConfirm != mdb.CallBackConfirmOk {
+		t.Fatalf("sub callback_confirm = %d, want %d", paidSub.CallBackConfirm, mdb.CallBackConfirmOk)
+	}
+
+	paidParent, err := data.GetOrderInfoByTradeId(parent.TradeId)
+	if err != nil {
+		t.Fatalf("reload parent order: %v", err)
+	}
+	if paidParent.Status != mdb.StatusPaySuccess {
+		t.Fatalf("parent status = %d, want %d", paidParent.Status, mdb.StatusPaySuccess)
+	}
+	if paidParent.PayBySubId != paidSub.ID {
+		t.Fatalf("parent pay_by_sub_id = %d, want %d", paidParent.PayBySubId, paidSub.ID)
+	}
+	if paidParent.CallBackConfirm != mdb.CallBackConfirmNo {
+		t.Fatalf("parent callback_confirm = %d, want %d", paidParent.CallBackConfirm, mdb.CallBackConfirmNo)
+	}
+
+	expiredSibling, err := data.GetOrderInfoByTradeId(sibling.TradeId)
+	if err != nil {
+		t.Fatalf("reload sibling order: %v", err)
+	}
+	if expiredSibling.Status != mdb.StatusExpired {
+		t.Fatalf("sibling status = %d, want %d", expiredSibling.Status, mdb.StatusExpired)
+	}
+}
+
 func TestAdminOrders_MarkPaidRejectsVerificationFailure(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 	order := &mdb.Orders{
@@ -901,7 +1075,7 @@ func TestAdminOrders_MarkPaidRejectsNonOnChainOrder(t *testing.T) {
 		ReceiveAddress: "TTestTronAddress001",
 		Token:          "USDT",
 		Network:        mdb.NetworkTron,
-		Status:         mdb.StatusWaitPay,
+		Status:         mdb.StatusExpired,
 		NotifyUrl:      "https://merchant.example/notify",
 		PayProvider:    mdb.PaymentProviderOkPay,
 	}
@@ -1402,6 +1576,157 @@ func TestAdminSettings_ForcedRateListValidation(t *testing.T) {
 	}
 }
 
+func TestAdminSettings_RateModeAndTTLValidation(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateMode, "value": " AUTO ", "type": "int"},
+			{"group": "rate", "key": mdb.SettingKeyRateCacheTTLSeconds, "value": 600, "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateMode, "value": "dynamic", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateCacheTTLSeconds, "value": 9, "type": "int"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results := resp["data"].([]interface{})
+	if results[0].(map[string]interface{})["ok"] != true || results[1].(map[string]interface{})["ok"] != true {
+		t.Fatalf("valid rate settings rejected: %v", results)
+	}
+	if results[2].(map[string]interface{})["ok"] != false || results[3].(map[string]interface{})["ok"] != false {
+		t.Fatalf("invalid rate settings accepted: %v", results)
+	}
+	if got := data.GetSettingString(mdb.SettingKeyRateMode, ""); got != config.RateModeAuto {
+		t.Fatalf("rate.mode = %q, want auto", got)
+	}
+	if got := data.GetSettingInt(mdb.SettingKeyRateCacheTTLSeconds, 0); got != 600 {
+		t.Fatalf("rate.cache_ttl_seconds = %d, want 600", got)
+	}
+}
+
+func TestAdminSettings_RateRefreshAndStatusPreserveLastSuccess(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	if err := data.SetSetting(mdb.SettingGroupRate, mdb.SettingKeyRateMode, config.RateModeAuto, mdb.SettingTypeString); err != nil {
+		t.Fatalf("set rate mode: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupRate, mdb.SettingKeyRateApiUrl, "https://rate.example.test", mdb.SettingTypeString); err != nil {
+		t.Fatalf("set rate API URL: %v", err)
+	}
+
+	originalFactory := http_client.ClientFactory
+	t.Cleanup(func() { http_client.ClientFactory = originalFactory })
+	failing := false
+	http_client.ClientFactory = func() *resty.Client {
+		return resty.NewWithClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			status := http.StatusOK
+			body := `{"cny":{"usdt":0.14635,"usdc":0.1463}}`
+			if failing {
+				status = http.StatusBadGateway
+				body = ""
+			}
+			return &http.Response{
+				StatusCode: status,
+				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		})})
+	}
+
+	rec := doPostAdmin(e, "/admin/api/v1/settings/rate/refresh", map[string]interface{}{
+		"bases": []string{" CNY ", "cny"},
+	}, token)
+	resp := assertOK(t, rec)
+	results := resp["data"].([]interface{})
+	if len(results) != 1 || results[0].(map[string]interface{})["ok"] != true {
+		t.Fatalf("refresh results = %v", results)
+	}
+
+	rec = doGetAdmin(e, "/admin/api/v1/settings/rate/status", token)
+	resp = assertOK(t, rec)
+	status := resp["data"].(map[string]interface{})
+	if status["mode"] != config.RateModeAuto || int(status["cache_ttl_seconds"].(float64)) != config.DefaultRateCacheTTL {
+		t.Fatalf("rate status config = %v", status)
+	}
+	bases := status["bases"].([]interface{})
+	if len(bases) != 1 || bases[0].(map[string]interface{})["last_refresh_ok"] != true {
+		t.Fatalf("rate status bases = %v", bases)
+	}
+
+	failing = true
+	rec = doPostAdmin(e, "/admin/api/v1/settings/rate/refresh", map[string]interface{}{
+		"bases": []string{"cny"},
+	}, token)
+	resp = assertOK(t, rec)
+	results = resp["data"].([]interface{})
+	if results[0].(map[string]interface{})["ok"] != false {
+		t.Fatalf("failed refresh result = %v", results[0])
+	}
+
+	rec = doGetAdmin(e, "/admin/api/v1/settings/rate/status", token)
+	resp = assertOK(t, rec)
+	bases = resp["data"].(map[string]interface{})["bases"].([]interface{})
+	base := bases[0].(map[string]interface{})
+	rates := base["rates"].(map[string]interface{})
+	if rates["usdt"].(float64) != 0.14635 || base["last_refresh_ok"] != false || base["last_error"] == "" {
+		t.Fatalf("failed refresh did not preserve cache/status: %v", base)
+	}
+}
+
+func TestAdminSettings_DefaultRateRefreshReturnsPerBaseResults(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	if err := data.SetSetting(mdb.SettingGroupRate, mdb.SettingKeyRateApiUrl, "https://rate.example.test", mdb.SettingTypeString); err != nil {
+		t.Fatalf("set rate API URL: %v", err)
+	}
+	if err := data.SetSetting(mdb.SettingGroupRate, mdb.SettingKeyRateForcedRateList, `{"cny":{"usdt":0.14},"usd":{"usdt":1}}`, mdb.SettingTypeJSON); err != nil {
+		t.Fatalf("set known rate bases: %v", err)
+	}
+
+	originalFactory := http_client.ClientFactory
+	t.Cleanup(func() { http_client.ClientFactory = originalFactory })
+	http_client.ClientFactory = func() *resty.Client {
+		return resty.NewWithClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			status := http.StatusOK
+			body := `{"cny":{"usdt":0.15}}`
+			if r.URL.Path == "/usd.json" {
+				status = http.StatusBadGateway
+				body = ""
+			}
+			return &http.Response{
+				StatusCode: status,
+				Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		})})
+	}
+
+	rec := doPostAdmin(e, "/admin/api/v1/settings/rate/refresh", map[string]interface{}{}, token)
+	resp := assertOK(t, rec)
+	results := resp["data"].([]interface{})
+	if len(results) != 2 {
+		t.Fatalf("default refresh results = %v", results)
+	}
+	byBase := make(map[string]map[string]interface{}, len(results))
+	for _, raw := range results {
+		result := raw.(map[string]interface{})
+		byBase[result["base"].(string)] = result
+	}
+	if byBase["cny"]["ok"] != true || byBase["usd"]["ok"] != false {
+		t.Fatalf("per-base refresh results = %v", byBase)
+	}
+	var cny, usd mdb.RateCache
+	if err := dao.Mdb.Where("base = ?", "cny").Take(&cny).Error; err != nil {
+		t.Fatalf("load CNY cache: %v", err)
+	}
+	if err := dao.Mdb.Where("base = ?", "usd").Take(&usd).Error; err != nil {
+		t.Fatalf("load USD refresh status: %v", err)
+	}
+	if !cny.LastRefreshOK || usd.LastRefreshOK || usd.LastError == "" {
+		t.Fatalf("persisted per-base states: cny=%#v usd=%#v", cny, usd)
+	}
+}
+
 func TestAdminSettings_AmountPrecisionValidationAndListing(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 
@@ -1598,6 +1923,79 @@ func TestAdminSettings_AllowsPublicRateAPIURL(t *testing.T) {
 	}
 }
 
+func TestAdminSettings_AllowsEmptyRateAPIURLAndRestoresDefaultForcedRateList(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateForcedRateList, "value": "", "type": "json"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results, ok := resp["data"].([]interface{})
+	if !ok || len(results) != 2 {
+		t.Fatalf("expected two results, got %T %v", resp["data"], resp["data"])
+	}
+	for _, item := range results {
+		result, _ := item.(map[string]interface{})
+		if result["ok"] != true {
+			t.Fatalf("empty rate settings result = %v, want ok=true", result)
+		}
+	}
+
+	var apiRow mdb.Setting
+	if err := dao.Mdb.Where("`key` = ?", mdb.SettingKeyRateApiUrl).Take(&apiRow).Error; err != nil {
+		t.Fatalf("load rate.api_url: %v", err)
+	}
+	if apiRow.Value != "" {
+		t.Fatalf("rate.api_url value = %q, want empty", apiRow.Value)
+	}
+
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("rate.forced_rate_list = %q, want default %q", got, mdb.SettingDefaultRateForcedRateList)
+	}
+	wantRate := 1.0 / 6.8
+	if got := config.GetRateForCoin("USDT", "CNY"); math.Abs(got-wantRate) > 1e-12 {
+		t.Fatalf("GetRateForCoin(USDT, CNY) = %v, want %v", got, wantRate)
+	}
+	if got := config.GetRateForCoin("USDC", "CNY"); math.Abs(got-wantRate) > 1e-12 {
+		t.Fatalf("GetRateForCoin(USDC, CNY) = %v, want %v", got, wantRate)
+	}
+}
+
+func TestAdminSettings_DoesNotOverrideNonEmptyForcedRateListWithZeroRate(t *testing.T) {
+	e, token := setupAdminTestEnv(t)
+	t.Setenv("API_RATE_URL", "")
+
+	rec := doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{
+		"items": []map[string]interface{}{
+			{"group": "rate", "key": mdb.SettingKeyRateApiUrl, "value": "", "type": "string"},
+			{"group": "rate", "key": mdb.SettingKeyRateForcedRateList, "value": map[string]interface{}{
+				"CNY": map[string]interface{}{"USDT": 0},
+			}, "type": "json"},
+		},
+	}, token)
+	resp := assertOK(t, rec)
+	results, ok := resp["data"].([]interface{})
+	if !ok || len(results) != 2 {
+		t.Fatalf("expected two results, got %T %v", resp["data"], resp["data"])
+	}
+	for _, item := range results {
+		result, _ := item.(map[string]interface{})
+		if result["ok"] != true {
+			t.Fatalf("zero forced rate list result = %v, want ok=true", result)
+		}
+	}
+
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != `{"cny":{"usdt":0}}` {
+		t.Fatalf("rate.forced_rate_list = %q, want user JSON preserved", got)
+	}
+	if got := config.GetRateForCoin("USDT", "CNY"); got != 0 {
+		t.Fatalf("zero forced rate lookup = %v, want 0", got)
+	}
+}
+
 func TestAdminSettings_DeleteThenReupsertRestoresSetting(t *testing.T) {
 	e, token := setupAdminTestEnv(t)
 
@@ -1664,11 +2062,12 @@ func TestAdminSettings_DeleteThenReupsertRestoresForcedRateList(t *testing.T) {
 
 	rec = doDeleteAdmin(e, "/admin/api/v1/settings/"+mdb.SettingKeyRateForcedRateList, token)
 	assertOK(t, rec)
-	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, "fallback"); got != "fallback" {
-		t.Fatalf("deleted forced rate list still in cache/read path: got %q", got)
+	if got := data.GetSettingString(mdb.SettingKeyRateForcedRateList, ""); got != mdb.SettingDefaultRateForcedRateList {
+		t.Fatalf("deleted forced rate list restored = %q, want default %q", got, mdb.SettingDefaultRateForcedRateList)
 	}
-	if got := config.GetRateForCoin("USDT", "CNY"); got != 0 {
-		t.Fatalf("deleted forced rate list still used by rate lookup: got %v", got)
+	wantDefaultRate := 1.0 / 6.8
+	if got := config.GetRateForCoin("USDT", "CNY"); math.Abs(got-wantDefaultRate) > 1e-12 {
+		t.Fatalf("deleted forced rate list lookup = %v, want default %v", got, wantDefaultRate)
 	}
 
 	rec = doPutAdmin(e, "/admin/api/v1/settings", map[string]interface{}{

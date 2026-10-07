@@ -80,7 +80,7 @@ func (c *BaseCommController) CheckStatus(ctx echo.Context) (err error) {
 
 // SubmitTxHash 手动提交交易 hash 补单
 // @Summary      Submit transaction hash
-// @Description  Submit an on-chain transaction hash from the cashier. The hash is verified against the order and, when valid, the same manual payment processing path used by admin mark-paid is executed. OkPay/provider orders are not supported.
+// @Description  Submit an on-chain transaction hash from the cashier. The hash is verified against the waiting order and, when valid, the same manual payment processing path used by admin mark-paid is executed. Expired orders and OkPay/provider orders are not supported.
 // @Description  TON accepts canonical ton:<receive_raw>:<lt>:<hash>, lt:hash, or a unique recent hash-only reference for the order receive address.
 // @Description  Aptos accepts a transaction hash.
 // @Description  Aptos automatic scanning polls fullnode ledger-version transaction ranges with a runtime cursor.

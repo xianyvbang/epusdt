@@ -34,6 +34,16 @@ var (
 	gOrderProcessingLock   sync.Mutex
 )
 
+var (
+	manualPaymentWaitPayStatuses = []int{mdb.StatusWaitPay}
+	adminManualPaymentStatuses   = []int{mdb.StatusWaitPay, mdb.StatusExpired}
+)
+
+type orderProcessingOptions struct {
+	allowedStatuses       []int
+	parentAllowedStatuses []int
+}
+
 // apiKeyID safely extracts the primary key from an ApiKey row.
 // Returns 0 when apiKey is nil (middleware didn't run — shouldn't happen on authed routes).
 func apiKeyID(apiKey *mdb.ApiKey) uint64 {
@@ -231,6 +241,20 @@ func CreateTransaction(req *request.CreateTransactionRequest, apiKey *mdb.ApiKey
 
 // OrderProcessing marks an order as paid and releases its sqlite reservation.
 func OrderProcessing(req *request.OrderProcessingRequest) error {
+	return orderProcessing(req, orderProcessingOptions{
+		allowedStatuses:       manualPaymentWaitPayStatuses,
+		parentAllowedStatuses: manualPaymentWaitPayStatuses,
+	})
+}
+
+func orderProcessingWithAllowedStatuses(req *request.OrderProcessingRequest, allowedStatuses []int) error {
+	return orderProcessing(req, orderProcessingOptions{
+		allowedStatuses:       allowedStatuses,
+		parentAllowedStatuses: allowedStatuses,
+	})
+}
+
+func orderProcessing(req *request.OrderProcessingRequest, opts orderProcessingOptions) error {
 	gOrderProcessingLock.Lock()
 	defer gOrderProcessingLock.Unlock()
 
@@ -245,7 +269,7 @@ func OrderProcessing(req *request.OrderProcessingRequest) error {
 		return constant.OrderBlockAlreadyProcess
 	}
 
-	updated, err := data.OrderSuccessWithTransaction(tx, req)
+	updated, err := data.OrderSuccessWithStatusesWithTransaction(tx, req, opts.allowedStatuses)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -316,7 +340,7 @@ func OrderProcessing(req *request.OrderProcessingRequest) error {
 	finalizeTx := dao.Mdb.Begin()
 
 	// Mark parent as paid with sub-order's payment details
-	updatedParent, markErr := data.MarkParentOrderSuccessWithTransaction(finalizeTx, parent.TradeId, order)
+	updatedParent, markErr := data.MarkParentOrderSuccessWithStatusesWithTransaction(finalizeTx, parent.TradeId, order, opts.parentAllowedStatuses)
 	if markErr != nil {
 		finalizeTx.Rollback()
 		log.Sugar.Errorf("[order] mark parent success failed, parent_trade_id=%s, err=%v", parent.TradeId, markErr)
@@ -324,7 +348,7 @@ func OrderProcessing(req *request.OrderProcessingRequest) error {
 	}
 	if !updatedParent {
 		finalizeTx.Rollback()
-		return fmt.Errorf("parent order not updated, trade_id=%s is not in wait-pay status", parent.TradeId)
+		return fmt.Errorf("parent order not updated, trade_id=%s is not in an allowed status", parent.TradeId)
 	}
 
 	if err = data.ExpireSiblingSubOrdersWithTransaction(finalizeTx, parent.TradeId, order.TradeId); err != nil {
@@ -428,7 +452,8 @@ func GetOrderInfoByTradeId(tradeId string) (*mdb.Orders, error) {
 }
 
 // SubmitManualPayment verifies a submitted transaction hash and marks the
-// matching on-chain order paid using the same path as automatic chain scans.
+// matching admin-selected on-chain order paid. Admin mark-paid may repair
+// waiting or expired orders after the submitted chain transaction is verified.
 func SubmitManualPayment(tradeId, blockTransactionId string) (*response.ManualPaymentResponse, error) {
 	tradeId = strings.TrimSpace(tradeId)
 	blockTransactionId = strings.TrimSpace(blockTransactionId)
@@ -437,7 +462,7 @@ func SubmitManualPayment(tradeId, blockTransactionId string) (*response.ManualPa
 	if err != nil {
 		return nil, err
 	}
-	return submitManualPaymentForOrder(order, blockTransactionId)
+	return submitManualPaymentForOrder(order, blockTransactionId, adminManualPaymentStatuses)
 }
 
 // SubmitCashierManualPayment is the public cashier variant. It rejects hashes
@@ -452,18 +477,18 @@ func SubmitCashierManualPayment(tradeId, blockTransactionId string) (*response.M
 	if err != nil {
 		return nil, err
 	}
-	if err = validateManualPaymentOrder(order); err != nil {
+	if err = validateManualPaymentOrderWithStatuses(order, manualPaymentWaitPayStatuses); err != nil {
 		return nil, err
 	}
 	if err = ensureManualBlockTransactionUnused(order, blockTransactionId); err != nil {
 		return nil, err
 	}
-	return submitManualPaymentForOrder(order, blockTransactionId)
+	return submitManualPaymentForOrder(order, blockTransactionId, manualPaymentWaitPayStatuses)
 }
 
-func submitManualPaymentForOrder(order *mdb.Orders, blockTransactionId string) (*response.ManualPaymentResponse, error) {
+func submitManualPaymentForOrder(order *mdb.Orders, blockTransactionId string, allowedStatuses []int) (*response.ManualPaymentResponse, error) {
 	blockTransactionId = strings.TrimSpace(blockTransactionId)
-	if err := validateManualPaymentOrder(order); err != nil {
+	if err := validateManualPaymentOrderWithStatuses(order, allowedStatuses); err != nil {
 		return nil, err
 	}
 
@@ -475,7 +500,7 @@ func submitManualPaymentForOrder(order *mdb.Orders, blockTransactionId string) (
 		}
 		return nil, constant.ManualPaymentVerifyErr
 	}
-	if err = OrderProcessing(&request.OrderProcessingRequest{
+	if err = orderProcessingWithAllowedStatuses(&request.OrderProcessingRequest{
 		ReceiveAddress:     order.ReceiveAddress,
 		Currency:           order.Currency,
 		Token:              order.Token,
@@ -483,7 +508,7 @@ func submitManualPaymentForOrder(order *mdb.Orders, blockTransactionId string) (
 		Amount:             order.ActualAmount,
 		TradeId:            order.TradeId,
 		BlockTransactionId: verifiedBlockTransactionID,
-	}); err != nil {
+	}, allowedStatuses); err != nil {
 		return nil, err
 	}
 
@@ -499,13 +524,26 @@ func submitManualPaymentForOrder(order *mdb.Orders, blockTransactionId string) (
 }
 
 func validateManualPaymentOrder(order *mdb.Orders) error {
-	if order.Status != mdb.StatusWaitPay {
+	return validateManualPaymentOrderWithStatuses(order, manualPaymentWaitPayStatuses)
+}
+
+func validateManualPaymentOrderWithStatuses(order *mdb.Orders, allowedStatuses []int) error {
+	if !manualPaymentStatusAllowed(order.Status, allowedStatuses) {
 		return constant.OrderNotWaitPay
 	}
 	if !isOnChainOrder(order.PayProvider) {
 		return constant.ManualPaymentProviderErr
 	}
 	return nil
+}
+
+func manualPaymentStatusAllowed(status int, allowedStatuses []int) bool {
+	for _, allowed := range allowedStatuses {
+		if status == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func isOnChainOrder(payProvider string) bool {
@@ -737,6 +775,7 @@ func buildCheckoutResponse(order *mdb.Orders) *response.CheckoutCounterResponse 
 		ExpirationTime: order.CreatedAt.AddMinutes(config.GetOrderExpirationTime()).TimestampMilli(),
 		RedirectUrl:    buildPublicRedirectURL(order),
 		CreatedAt:      order.CreatedAt.TimestampMilli(),
+		ServerTime:     carbon.Now().TimestampMilli(),
 		IsSelected:     order.IsSelected,
 	}
 }

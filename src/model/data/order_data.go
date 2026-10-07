@@ -81,6 +81,15 @@ func applyLockAddressFilter(tx *gorm.DB, network, address string) *gorm.DB {
 	return tx.Where("address = ?", address)
 }
 
+func applyOrderReceiveAddressFilter(tx *gorm.DB, network, address string) *gorm.DB {
+	network = normalizeLockNetwork(network)
+	address = normalizeLockAddress(network, address)
+	if isEVMNetwork(network) {
+		return tx.Where("lower(receive_address) = ?", address)
+	}
+	return tx.Where("receive_address = ?", address)
+}
+
 func activeLocksForAddress(tx *gorm.DB, network, address, token string, now time.Time) *gorm.DB {
 	query := tx.Model(&mdb.TransactionLock{}).
 		Where("network = ?", normalizeLockNetwork(network)).
@@ -183,9 +192,18 @@ func GetOrderByBlockTransactionIDsCaseInsensitive(blockIDs []string) (*mdb.Order
 
 // OrderSuccessWithTransaction marks an order as paid only if it is still waiting for payment.
 func OrderSuccessWithTransaction(tx *gorm.DB, req *request.OrderProcessingRequest) (bool, error) {
+	return OrderSuccessWithStatusesWithTransaction(tx, req, []int{mdb.StatusWaitPay})
+}
+
+// OrderSuccessWithStatusesWithTransaction marks an order as paid only if its
+// current status is included in allowedStatuses.
+func OrderSuccessWithStatusesWithTransaction(tx *gorm.DB, req *request.OrderProcessingRequest, allowedStatuses []int) (bool, error) {
+	if len(allowedStatuses) == 0 {
+		return false, nil
+	}
 	result := tx.Model(&mdb.Orders{}).
 		Where("trade_id = ?", req.TradeId).
-		Where("status = ?", mdb.StatusWaitPay).
+		Where("status IN ?", allowedStatuses).
 		Updates(map[string]interface{}{
 			"block_transaction_id": req.BlockTransactionId,
 			"status":               mdb.StatusPaySuccess,
@@ -285,9 +303,18 @@ func MarkParentOrderSuccess(parentTradeId string, sub *mdb.Orders) (bool, error)
 // MarkParentOrderSuccessWithTransaction is the transactional variant of
 // MarkParentOrderSuccess.
 func MarkParentOrderSuccessWithTransaction(tx *gorm.DB, parentTradeId string, sub *mdb.Orders) (bool, error) {
+	return MarkParentOrderSuccessWithStatusesWithTransaction(tx, parentTradeId, sub, []int{mdb.StatusWaitPay})
+}
+
+// MarkParentOrderSuccessWithStatusesWithTransaction marks a parent order as paid
+// only if its current status is included in allowedStatuses.
+func MarkParentOrderSuccessWithStatusesWithTransaction(tx *gorm.DB, parentTradeId string, sub *mdb.Orders, allowedStatuses []int) (bool, error) {
+	if len(allowedStatuses) == 0 {
+		return false, nil
+	}
 	result := tx.Model(&mdb.Orders{}).
 		Where("trade_id = ?", parentTradeId).
-		Where("status = ?", mdb.StatusWaitPay).
+		Where("status IN ?", allowedStatuses).
 		Updates(map[string]interface{}{
 			"status":           mdb.StatusPaySuccess,
 			"callback_confirm": mdb.CallBackConfirmNo,
@@ -457,6 +484,28 @@ func GetTradeIdByWalletAddressAndAmountAndToken(network string, address string, 
 		}
 	}
 	return "", nil
+}
+
+// GetOnChainOrderByWalletAddressAndAmountAndTokenBeforeTime finds the most
+// relevant on-chain order row when the runtime lock is gone. It is used by
+// backfill scanners that need to recover a payment after the reservation lock
+// has already expired.
+func GetOnChainOrderByWalletAddressAndAmountAndTokenBeforeTime(network string, address string, token string, amount float64, before time.Time) (*mdb.Orders, error) {
+	network = normalizeLockNetwork(network)
+	address = normalizeLockAddress(network, address)
+	token = normalizeLockToken(token)
+
+	order := new(mdb.Orders)
+	query := dao.Mdb.Model(order).
+		Where("network = ?", network).
+		Where("token = ?", token).
+		Where("actual_amount = ?", amount).
+		Where("created_at <= ?", before).
+		Where("status IN ?", []int{mdb.StatusWaitPay, mdb.StatusExpired}).
+		Where("(pay_provider = ? OR pay_provider = '')", mdb.PaymentProviderOnChain)
+	query = applyOrderReceiveAddressFilter(query, network, address)
+	err := query.Order("created_at desc, id desc").Limit(1).Find(order).Error
+	return order, err
 }
 
 // LockTransaction reserves a network+address+token+amount pair in sqlite until expiration.

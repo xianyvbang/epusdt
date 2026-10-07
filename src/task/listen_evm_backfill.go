@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/GMWalletApp/epusdt/model/data"
@@ -21,277 +18,329 @@ import (
 )
 
 const (
-	evmBackfillPollInterval = 10 * time.Second
-	evmBackfillJobTimeout   = 50 * time.Second
-	evmBackfillRPCTimeout   = 12 * time.Second
-	evmBackfillLookback     = uint64(1200)
-	evmBackfillOverlap      = uint64(6)
-	evmBackfillChunkSize    = uint64(200)
+	evmBackfillInitialLookbackBlocks = 2048
+	evmBackfillBatchBlocks           = 1000
+	evmBackfillRetryDelay            = 3 * time.Second
+	evmBackfillCatchupDelay          = 250 * time.Millisecond
+	evmBackfillHeaderTimeout         = 10 * time.Second
+	evmBackfillQueryTimeout          = 30 * time.Second
 )
 
-var evmBackfillNetworks = []string{
-	mdb.NetworkBsc,
-	mdb.NetworkEthereum,
-	mdb.NetworkPolygon,
-	mdb.NetworkPlasma,
+type evmRecipientStoreFunc func([]mdb.WalletAddress) int
+type evmRecipientCheckerFunc func(common.Address) bool
+
+func StartEthereumBackfillScannerListener() {
+	startEvmBackfillScanner(mdb.NetworkEthereum, "[ETH-BACKFILL]", StoreEthRecipientsFromWallets, isWatchedEthRecipient)
 }
 
-type evmBackfillRPC interface {
-	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
-	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
+func StartBscBackfillScannerListener() {
+	startEvmBackfillScanner(mdb.NetworkBsc, "[BSC-BACKFILL]", storeBscRecipientsFromWallets, isWatchedBscRecipient)
 }
 
-type evmBackfillScanner struct {
-	lastScanned map[string]uint64
+func StartPolygonBackfillScannerListener() {
+	startEvmBackfillScanner(mdb.NetworkPolygon, "[POLYGON-BACKFILL]", storePolygonRecipientsFromWallets, isWatchedPolygonRecipient)
 }
 
-var (
-	gEvmBackfillJobLock sync.Mutex
-	gEvmBackfillScanner = evmBackfillScanner{lastScanned: make(map[string]uint64)}
-)
+func StartPlasmaBackfillScannerListener() {
+	startEvmBackfillScanner(mdb.NetworkPlasma, "[PLASMA-BACKFILL]", storePlasmaRecipientsFromWallets, isWatchedPlasmaRecipient)
+}
 
-type EvmRpcBackfillJob struct{}
+func startEvmBackfillScanner(network, logPrefix string, storeRecipients evmRecipientStoreFunc, isWatchedRecipient evmRecipientCheckerFunc) {
+	for {
+		if data.IsChainEnabled(network) {
+			if contracts := loadChainTokenContracts(network, logPrefix); len(contracts) > 0 {
+				runEvmBackfillScanner(network, logPrefix, contracts, storeRecipients, isWatchedRecipient)
+			}
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
 
-func (EvmRpcBackfillJob) Run() {
-	if !gEvmBackfillJobLock.TryLock() {
-		log.Sugar.Debug("[EVM-RPC] previous backfill is still running, skipping tick")
+func runEvmBackfillScanner(network, logPrefix string, contracts []common.Address, storeRecipients evmRecipientStoreFunc, isWatchedRecipient evmRecipientCheckerFunc) {
+	ctx, cancel := chainEnabledWatchdog(network, logPrefix, chainTokenFingerprint(network))
+	defer cancel()
+
+	wallets, err := data.GetAvailableWalletAddressByNetwork(network)
+	if err != nil {
+		log.Sugar.Errorf("%s failed to get wallet addresses: %v", logPrefix, err)
 		return
 	}
-	defer gEvmBackfillJobLock.Unlock()
+	if len(evmRecipientTopicsFromWallets(wallets)) == 0 {
+		log.Sugar.Warnf("%s no enabled wallet addresses, scanner idle", logPrefix)
+		return
+	}
+	storeRecipients(wallets)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				w, err := data.GetAvailableWalletAddressByNetwork(network)
+				if err != nil {
+					log.Sugar.Warnf("%s refresh wallet addresses: %v", logPrefix, err)
+					continue
+				}
+				storeRecipients(w)
+			}
+		}
+	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), evmBackfillJobTimeout)
-	defer cancel()
-	if err := gEvmBackfillScanner.pollOnce(ctx); err != nil {
-		log.Sugar.Warnf("[EVM-RPC] backfill failed: %v", err)
+	node, ok := resolveChainHttpNode(network, logPrefix)
+	nodeKind := "HTTP"
+	if !ok {
+		node, ok = resolveChainWsNode(network, logPrefix)
+		nodeKind = "WSS"
 	}
-}
+	if !ok {
+		return
+	}
+	log.Sugar.Infof("%s connecting using %s node %s watching %d contract(s)", logPrefix, nodeKind, data.RpcNodeLogLabel(node), len(contracts))
 
-func (s *evmBackfillScanner) pollOnce(ctx context.Context) error {
-	locks, err := data.ListActiveTransactionLocks(evmBackfillNetworks...)
-	if err != nil {
-		return err
-	}
-	recipients := groupEvmBackfillRecipients(locks)
-	for _, network := range evmBackfillNetworks {
-		if len(recipients[network]) == 0 || !data.IsChainEnabled(network) {
-			continue
-		}
-		contracts := loadChainTokenContracts(network, "[EVM-RPC]")
-		if len(contracts) == 0 {
-			continue
-		}
-		if err := s.scanNetwork(ctx, network, contracts, recipients[network]); err != nil {
-			log.Sugar.Warnf("[EVM-RPC-%s] scan failed: %v", network, err)
-		}
-	}
-	return nil
-}
-
-func groupEvmBackfillRecipients(locks []data.ActiveTransactionLock) map[string][]common.Address {
-	sets := make(map[string]map[common.Address]struct{})
-	for _, lock := range locks {
-		network := strings.ToLower(strings.TrimSpace(lock.Network))
-		if !common.IsHexAddress(lock.Address) {
-			continue
-		}
-		if sets[network] == nil {
-			sets[network] = make(map[common.Address]struct{})
-		}
-		sets[network][common.HexToAddress(lock.Address)] = struct{}{}
-	}
-	out := make(map[string][]common.Address, len(sets))
-	for network, set := range sets {
-		for address := range set {
-			out[network] = append(out[network], address)
-		}
-		sort.Slice(out[network], func(i, j int) bool {
-			return strings.ToLower(out[network][i].Hex()) < strings.ToLower(out[network][j].Hex())
-		})
-	}
-	return out
-}
-
-func (s *evmBackfillScanner) scanNetwork(ctx context.Context, network string, contracts, recipients []common.Address) error {
-	nodes, err := listEvmBackfillNodes(network)
-	if err != nil {
-		return err
-	}
-	if len(nodes) == 0 {
-		return fmt.Errorf("no enabled HTTP or WS RPC node configured")
+	query := ethereum.FilterQuery{
+		Addresses: contracts,
 	}
 
-	var failures []string
-	for _, node := range nodes {
+	failWait := 2 * time.Second
+	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return
 		}
-		dialCtx, cancel := context.WithTimeout(ctx, evmBackfillRPCTimeout)
-		client, dialErr := ethclient.DialContext(dialCtx, strings.TrimSpace(node.Url))
-		cancel()
-		if dialErr != nil {
-			data.RecordRpcNodeFailure(node.ID)
-			failures = append(failures, fmt.Sprintf("%s: dial: %v", data.RpcNodeLogLabel(node), dialErr))
+
+		dialCtx, cancelDial := context.WithTimeout(ctx, evmNodeDialTimeout)
+		client, err := ethclient.DialContext(dialCtx, node.Url)
+		cancelDial()
+		if err != nil {
+			log.Sugar.Warnf("%s dial: %v, retry in %s", logPrefix, err, failWait)
+			if recordEvmNodeFailure(logPrefix, network, node, "dial") {
+				return
+			}
+			if !sleepOrDone(ctx, failWait) {
+				return
+			}
+			failWait = nextBackoff(failWait, 60*time.Second)
 			continue
 		}
 
-		scanErr := s.scanNetworkWithClient(ctx, network, client, contracts, recipients)
+		err = runEvmBackfillLoop(ctx, client, network, logPrefix, node, query, isWatchedRecipient)
 		client.Close()
-		if scanErr != nil {
-			data.RecordRpcNodeFailure(node.ID)
-			failures = append(failures, fmt.Sprintf("%s: %v", data.RpcNodeLogLabel(node), scanErr))
+
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			log.Sugar.Warnf("%s backfill loop stopped: %v, retry in %s", logPrefix, err, failWait)
+			if recordEvmNodeFailure(logPrefix, network, node, err.Error()) {
+				return
+			}
+			if !sleepOrDone(ctx, failWait) {
+				return
+			}
+			failWait = nextBackoff(failWait, 60*time.Second)
 			continue
 		}
-		data.RecordRpcSuccess(network)
-		data.RecordRpcNodeSuccess(node.ID)
-		return nil
+
+		failWait = 2 * time.Second
+		if !sleepOrDone(ctx, 3*time.Second) {
+			return
+		}
 	}
-	return fmt.Errorf("all RPC nodes failed: %s", strings.Join(failures, "; "))
 }
 
-func listEvmBackfillNodes(network string) ([]mdb.RpcNode, error) {
-	httpNodes, err := data.ListManualPaymentRpcCandidates(network, mdb.RpcNodeTypeHttp)
+func runEvmBackfillLoop(ctx context.Context, client *ethclient.Client, network, logPrefix string, node mdb.RpcNode, baseQuery ethereum.FilterQuery, isWatchedRecipient evmRecipientCheckerFunc) error {
+	lastBlock, initialized, err := loadEvmScanCursor(network)
 	if err != nil {
-		return nil, err
-	}
-	wsNodes, err := data.ListGeneralRpcCandidates(network, mdb.RpcNodeTypeWs)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]mdb.RpcNode, 0, len(httpNodes)+len(wsNodes))
-	seen := make(map[uint64]struct{})
-	for _, node := range append(httpNodes, wsNodes...) {
-		if node.ID == 0 || strings.TrimSpace(node.Url) == "" || data.IsRpcNodeCoolingDown(node.ID) {
-			continue
-		}
-		if _, ok := seen[node.ID]; ok {
-			continue
-		}
-		seen[node.ID] = struct{}{}
-		out = append(out, node)
-	}
-	return out, nil
-}
-
-func (s *evmBackfillScanner) scanNetworkWithClient(ctx context.Context, network string, client evmBackfillRPC, contracts, recipients []common.Address) error {
-	rpcCtx, cancel := context.WithTimeout(ctx, evmBackfillRPCTimeout)
-	latest, err := client.HeaderByNumber(rpcCtx, nil)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("latest block: %w", err)
-	}
-	if latest == nil || latest.Number == nil || !latest.Number.IsUint64() {
-		return fmt.Errorf("latest block number missing or invalid")
+		return err
 	}
 
-	confirmations := uint64(1)
-	chain, err := data.GetChainByNetwork(network)
-	if err != nil {
-		return fmt.Errorf("load chain settings: %w", err)
-	}
-	if chain != nil && chain.MinConfirmations > 1 {
-		confirmations = uint64(chain.MinConfirmations)
-	}
-	latestNumber := latest.Number.Uint64()
-	if latestNumber+1 < confirmations {
-		return nil
-	}
-	scanHead := latestNumber - (confirmations - 1)
-	fromBlock := evmBackfillStartBlock(s.lastScanned[network], scanHead)
-	if fromBlock > scanHead {
-		return nil
-	}
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 
-	for chunkStart := fromBlock; chunkStart <= scanHead; {
-		chunkEnd := chunkStart + evmBackfillChunkSize - 1
-		if chunkEnd < chunkStart || chunkEnd > scanHead {
-			chunkEnd = scanHead
+		chain, interval := evmBackfillChainConfig(network)
+		if chain == nil || !chain.Enabled {
+			return nil
 		}
-		query := buildEvmBackfillQuery(contracts, recipients, chunkStart, chunkEnd)
-		rpcCtx, cancel = context.WithTimeout(ctx, evmBackfillRPCTimeout)
-		logs, filterErr := client.FilterLogs(rpcCtx, query)
-		cancel()
-		if filterErr != nil {
-			return fmt.Errorf("filter logs blocks %d-%d: %w", chunkStart, chunkEnd, filterErr)
-		}
-		if err := processEvmBackfillLogs(ctx, network, client, logs); err != nil {
+
+		latest, err := latestEvmHeader(ctx, client, network, logPrefix)
+		if err != nil {
 			return err
 		}
-		if chunkEnd == scanHead {
-			break
+		if latest == nil {
+			return nil
 		}
-		chunkStart = chunkEnd + 1
-	}
-
-	s.lastScanned[network] = scanHead
-	data.RecordRpcBlockHeight(network, int64(scanHead))
-	log.Sugar.Debugf("[EVM-RPC-%s] scanned confirmed blocks %d-%d for %d recipient(s)", network, fromBlock, scanHead, len(recipients))
-	return nil
-}
-
-func evmBackfillStartBlock(lastScanned, scanHead uint64) uint64 {
-	floor := uint64(0)
-	if scanHead+1 > evmBackfillLookback {
-		floor = scanHead - evmBackfillLookback + 1
-	}
-	if lastScanned == 0 {
-		return floor
-	}
-	start := uint64(0)
-	if lastScanned+1 > evmBackfillOverlap {
-		start = lastScanned - evmBackfillOverlap + 1
-	}
-	if start < floor {
-		return floor
-	}
-	return start
-}
-
-func buildEvmBackfillQuery(contracts, recipients []common.Address, fromBlock, toBlock uint64) ethereum.FilterQuery {
-	recipientTopics := make([]common.Hash, 0, len(recipients))
-	for _, recipient := range recipients {
-		recipientTopics = append(recipientTopics, common.BytesToHash(recipient.Bytes()))
-	}
-	return ethereum.FilterQuery{
-		FromBlock: new(big.Int).SetUint64(fromBlock),
-		ToBlock:   new(big.Int).SetUint64(toBlock),
-		Addresses: contracts,
-		Topics: [][]common.Hash{
-			{transferEventHash},
-			nil,
-			recipientTopics,
-		},
-	}
-}
-
-func processEvmBackfillLogs(ctx context.Context, network string, client evmBackfillRPC, logs []types.Log) error {
-	sort.SliceStable(logs, func(i, j int) bool {
-		if logs[i].BlockNumber != logs[j].BlockNumber {
-			return logs[i].BlockNumber < logs[j].BlockNumber
+		if latest.Number == nil || !latest.Number.IsInt64() {
+			return fmt.Errorf("latest block number exceeds int64 range")
 		}
-		return logs[i].Index < logs[j].Index
-	})
-	blockTimes := make(map[uint64]int64)
-	for _, event := range logs {
-		if event.Removed || len(event.Topics) < 3 || event.Topics[0] != transferEventHash || len(event.Data) == 0 {
+
+		confirmedHead := confirmedEvmHead(latest.Number.Int64(), chain.MinConfirmations)
+		if !initialized {
+			lastBlock = confirmedHead - evmBackfillInitialLookbackBlocks
+			if lastBlock < 0 {
+				lastBlock = 0
+			}
+			if err := data.UpsertEvmScanCursor(network, lastBlock); err != nil {
+				return fmt.Errorf("initialize backfill cursor: %w", err)
+			}
+			initialized = true
+			log.Sugar.Infof("%s initialized backfill cursor at block=%d confirmed_head=%d lookback=%d", logPrefix, lastBlock, confirmedHead, evmBackfillInitialLookbackBlocks)
+		}
+
+		if lastBlock >= confirmedHead {
+			if !sleepOrDone(ctx, interval) {
+				return nil
+			}
 			continue
 		}
-		blockTimeMs, ok := blockTimes[event.BlockNumber]
-		if !ok {
-			rpcCtx, cancel := context.WithTimeout(ctx, evmBackfillRPCTimeout)
-			header, err := client.HeaderByNumber(rpcCtx, new(big.Int).SetUint64(event.BlockNumber))
-			cancel()
-			if err != nil {
-				return fmt.Errorf("block %d timestamp: %w", event.BlockNumber, err)
-			}
-			if header == nil {
-				return fmt.Errorf("block %d timestamp missing", event.BlockNumber)
-			}
-			blockTimeMs = int64(header.Time) * 1000
-			blockTimes[event.BlockNumber] = blockTimeMs
+
+		fromBlock := lastBlock + 1
+		toBlock := fromBlock + evmBackfillBatchSize(network) - 1
+		if toBlock > confirmedHead {
+			toBlock = confirmedHead
 		}
-		to := common.BytesToAddress(event.Topics[2].Bytes())
-		amount := new(big.Int).SetBytes(event.Data)
-		service.TryProcessEvmERC20Transfer(network, event.Address, to, amount, event.TxHash.Hex(), blockTimeMs)
+
+		rpcCtx, cancel := context.WithTimeout(ctx, evmBackfillQueryTimeout)
+		recipientTopics := loadEvmRecipientTopics(network, logPrefix)
+		if len(recipientTopics) == 0 {
+			cancel()
+			if !sleepOrDone(ctx, interval) {
+				return nil
+			}
+			continue
+		}
+		batchQuery := baseQuery
+		batchQuery.FromBlock = big.NewInt(fromBlock)
+		batchQuery.ToBlock = big.NewInt(toBlock)
+		batchQuery.Topics = evmTransferTopics(recipientTopics)
+		logs, err := client.FilterLogs(rpcCtx, batchQuery)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("filter logs range=%d-%d: %w", fromBlock, toBlock, err)
+		}
+
+		if err := processEvmBackfillLogs(ctx, client, network, logPrefix, logs, isWatchedRecipient); err != nil {
+			return err
+		}
+		if err := data.UpsertEvmScanCursor(network, toBlock); err != nil {
+			return fmt.Errorf("save backfill cursor range=%d-%d: %w", fromBlock, toBlock, err)
+		}
+		lastBlock = toBlock
+
+		data.RecordRpcSuccess(network)
+		data.RecordRpcNodeSuccess(node.ID)
+
+		if toBlock < confirmedHead {
+			if !sleepOrDone(ctx, evmBackfillCatchupDelay) {
+				return nil
+			}
+			continue
+		}
+		if !sleepOrDone(ctx, interval) {
+			return nil
+		}
+	}
+}
+
+func processEvmBackfillLogs(ctx context.Context, client *ethclient.Client, network, logPrefix string, logs []types.Log, isWatchedRecipient evmRecipientCheckerFunc) error {
+	headerCache := make(map[uint64]int64)
+	for _, vLog := range logs {
+		if len(vLog.Topics) < 3 {
+			continue
+		}
+		if vLog.Topics[0] != transferEventHash {
+			continue
+		}
+
+		toAddr := common.HexToAddress(vLog.Topics[2].Hex())
+		if !isWatchedRecipient(toAddr) {
+			continue
+		}
+
+		blockTsMs, ok := headerCache[vLog.BlockNumber]
+		if !ok {
+			header, err := latestEvmBlockHeader(ctx, client, vLog.BlockNumber)
+			if err != nil {
+				return fmt.Errorf("fetch block header network=%s block=%d: %w", network, vLog.BlockNumber, err)
+			}
+			if header == nil || header.Time == 0 {
+				return fmt.Errorf("missing block header timestamp network=%s block=%d", network, vLog.BlockNumber)
+			}
+			blockTsMs = int64(header.Time) * 1000
+			headerCache[vLog.BlockNumber] = blockTsMs
+		}
+
+		service.TryProcessEvmERC20Transfer(network, vLog.Address, toAddr, new(big.Int).SetBytes(vLog.Data), vLog.TxHash.Hex(), blockTsMs)
 	}
 	return nil
+}
+
+func loadEvmScanCursor(network string) (int64, bool, error) {
+	row, err := data.GetEvmScanCursor(network)
+	if err != nil {
+		return 0, false, err
+	}
+	if row == nil || row.ID == 0 || row.LastBlock <= 0 {
+		return 0, false, nil
+	}
+	return row.LastBlock, true, nil
+}
+
+func evmBackfillChainConfig(network string) (*mdb.Chain, time.Duration) {
+	chain, err := data.GetChainByNetwork(network)
+	if err != nil || chain == nil {
+		return nil, 5 * time.Second
+	}
+	interval := time.Duration(chain.ScanIntervalSec) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	return chain, interval
+}
+
+func evmBackfillBatchSize(network string) int64 {
+	if network == mdb.NetworkBsc {
+		return 200
+	}
+	return evmBackfillBatchBlocks
+}
+
+func confirmedEvmHead(head int64, minConfirmations int) int64 {
+	if minConfirmations <= 1 {
+		return head
+	}
+	conf := int64(minConfirmations)
+	if head < conf-1 {
+		return 0
+	}
+	return head - conf + 1
+}
+
+func latestEvmHeader(ctx context.Context, client *ethclient.Client, network, logPrefix string) (*types.Header, error) {
+	headerCtx, cancel := context.WithTimeout(ctx, evmBackfillHeaderTimeout)
+	defer cancel()
+
+	header, err := client.HeaderByNumber(headerCtx, nil)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("latest header: %w", err)
+	}
+	data.RecordRpcSuccess(network)
+	if header != nil {
+		if header.Number != nil && header.Number.IsInt64() {
+			data.RecordRpcBlockHeight(network, header.Number.Int64())
+			log.Sugar.Debugf("%s latest confirmed block=%s", logPrefix, header.Number.String())
+		}
+	}
+	return header, nil
+}
+
+func latestEvmBlockHeader(ctx context.Context, client *ethclient.Client, blockNumber uint64) (*types.Header, error) {
+	headerCtx, cancel := context.WithTimeout(ctx, evmBackfillHeaderTimeout)
+	defer cancel()
+	return client.HeaderByNumber(headerCtx, big.NewInt(int64(blockNumber)))
 }
