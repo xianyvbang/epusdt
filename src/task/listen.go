@@ -40,15 +40,6 @@ func Start() {
 	}
 	log.Sugar.Info("[task] RpcHealthJob scheduled successfully (@every 30s)")
 
-	// Confirmed-block RPC polling compensates for WebSocket disconnects and
-	// does not depend on explorer pages or vendor-specific browser APIs.
-	_, err = c.AddJob("@every "+evmBackfillPollInterval.String(), EvmRpcBackfillJob{})
-	if err != nil {
-		log.Sugar.Errorf("[task] Failed to add EvmRpcBackfillJob: %v", err)
-		return
-	}
-	log.Sugar.Infof("[task] EvmRpcBackfillJob scheduled successfully (@every %s)", evmBackfillPollInterval)
-
 	_, err = c.AddJob("@every "+okxExplorerPollInterval.String(), OkxExplorerJob{})
 	if err != nil {
 		log.Sugar.Errorf("[task] Failed to add OkxExplorerJob: %v", err)
