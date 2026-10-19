@@ -15,6 +15,7 @@
 | 查询支付状态 | GET | `/pay/check-status/{trade_id}` | 否 |
 | 切换支付网络/通道 | POST | `/pay/switch-network` | 否 |
 | EPay 兼容创建交易 | GET/POST | `/payments/epay/v1/order/create-transaction/submit.php` | 是 |
+| EPay 查询订单 | GET/POST | `/api.php?act=order` | `pid` + `key` |
 | OkPay 平台回调 | POST | `/payments/okpay/v1/notify` | OkPay 签名 |
 
 ## 统一响应格式
@@ -420,6 +421,34 @@ function epaySign(array $params, string $secretKey): string
 - 状态 `4` 补全后订单变为状态 `1`，但 `is_selected` 保持 `false`；之后同目标选择会返回父单并标记选中，切到其它支付目标才创建子订单。
 - 每个父订单最多创建 1 个子订单；已经创建过子订单后，不能再用该父单创建第二个新子订单。子订单本身不能继续切换网络。
 - 如果切换到同一组 `token + network`，会返回已有订单。
+
+## EPay 查询订单
+
+`GET /api.php?act=order&pid={pid}&key={secret_key}&trade_no={trade_id}`
+
+也可以使用 `out_trade_no` 传商户订单号；`trade_no` 和 `out_trade_no` 至少提供一个。接口使用商户 API key 的 `secret_key` 作为 `key`，并且只返回该商户自己创建的订单。
+
+成功响应为原生 EPay 格式：
+
+```json
+{
+  "code": 1,
+  "msg": "查询订单号成功！",
+  "trade_no": "2016080622555342651",
+  "out_trade_no": "20160806151343349",
+  "type": "alipay",
+  "pid": "20220715225121",
+  "addtime": "2016-08-06 22:55:52",
+  "endtime": "2016-08-06 22:55:52",
+  "name": "VIP会员",
+  "money": "1.00",
+  "status": 1,
+  "param": "",
+  "buyer": ""
+}
+```
+
+`status=1` 表示支付成功，`status=0` 表示未支付或已过期；未支付订单的 `endtime` 为空。参数错误、密钥错误或订单不存在时返回 `code=0` 和 `msg`，HTTP 状态仍为 200，以兼容传统 EPay 客户端。
 
 ## EPay 兼容创建交易
 

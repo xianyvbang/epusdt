@@ -73,6 +73,10 @@ func RegisterRoute(e *echo.Echo) {
 	payRoute.POST("/submit-tx-hash/:trade_id", comm.Ctrl.SubmitTxHash)
 	payRoute.POST("/switch-network", comm.Ctrl.SwitchNetwork)
 
+	// Legacy EPay API compatibility endpoint. Unlike the newer GMPay/EPay
+	// routes, this endpoint returns the native EPay response shape.
+	e.Match([]string{http.MethodGet, http.MethodPost}, "/api.php", comm.Ctrl.QueryEPayOrder)
+
 	// payment routes
 	paymentRoute := e.Group("/payments")
 
