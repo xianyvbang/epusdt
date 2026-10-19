@@ -293,14 +293,16 @@ func TestEPayOrderQueryReturnsNativeResponseByTradeOrMerchantOrder(t *testing.T)
 	}).Error; err != nil {
 		t.Fatalf("create query fixture: %v", err)
 	}
-	for _, identifier := range []string{"trade_no", "out_trade_no"} {
-		values := url.Values{"act": {"order"}, "pid": {"1"}, "key": {testAPIToken}}
-		if identifier == "trade_no" { values.Set(identifier, "epay-query-trade-001") } else { values.Set(identifier, "epay-query-out-001") }
-		req := httptest.NewRequest(http.MethodGet, "/api.php?"+values.Encode(), nil)
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		if resp := parseResp(t, rec); resp["code"] != float64(1) || resp["trade_no"] != "epay-query-trade-001" || resp["out_trade_no"] != "epay-query-out-001" || resp["money"] != "12.50" || resp["status"] != float64(1) {
-			t.Fatalf("query by %s response = %v", identifier, resp)
+	for _, path := range []string{"/api.php", "/payments/epay/v1/order/create-transaction/api.php"} {
+		for _, identifier := range []string{"trade_no", "out_trade_no"} {
+			values := url.Values{"act": {"order"}, "pid": {"1"}, "key": {testAPIToken}}
+			if identifier == "trade_no" { values.Set(identifier, "epay-query-trade-001") } else { values.Set(identifier, "epay-query-out-001") }
+			req := httptest.NewRequest(http.MethodGet, path+"?"+values.Encode(), nil)
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			if resp := parseResp(t, rec); resp["code"] != float64(1) || resp["trade_no"] != "epay-query-trade-001" || resp["out_trade_no"] != "epay-query-out-001" || resp["money"] != "12.50" || resp["status"] != float64(1) {
+				t.Fatalf("query %s by %s response = %v", path, identifier, resp)
+			}
 		}
 	}
 }
